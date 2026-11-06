@@ -7,13 +7,17 @@ import { encodeWearPly } from "./export";
 import type { MeshSource, SourceInfo, WearMode, WearRequest, WearResponse } from "./protocol";
 import { identityUpperSetupPose, isValidUpperSetupPose, transformUpperGeometry } from "./upperPose";
 import { advanceBiteCycle, emptyBiteCycleMetrics, validateBiteCycleSettings, type BiteCycleMetrics } from "./biteCycles";
+import { bakeCrownRow, createCrownRows, crownRowPitch, spaceCrownRows, identityCrownRotations, indexCrownGeometry, isValidCrownRotations, type CrownRowLayout } from "./crownRows";
+import { createCrownSpacingChecker } from "./crownSpacing";
 
 let sources: [WearGeometry, WearGeometry] | undefined;
 let info: [SourceInfo, SourceInfo] | undefined;
+let crownRows: [CrownRowLayout, CrownRowLayout] | undefined;
 let state: WearState | undefined;
 let traceSettings: VegetationSettings | undefined;
 let traceRequestId = 0;
-let settings = { spacing: 0.5, autoOpen: true, contactSpread: 0, upperPose: identityUpperSetupPose(), mode: "geometric" as WearMode };
+let settings = { spacing: 0.5, autoOpen: true, contactSpread: 0, chipThickness: 0, upperPose: identityUpperSetupPose(), lowerPose: identityUpperSetupPose(), crownRotations: identityCrownRotations(), crownPitch: 0, mode: "geometric" as WearMode };
+const checkCrownSpacing = createCrownSpacingChecker();
 let cycle: BiteCycleMetrics | undefined;
 const send = (message: WearResponse, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
 const compute = new WearComputeBackend(status => send({ type: "compute-status", status }));
@@ -59,7 +63,7 @@ async function readSource(source: MeshSource): Promise<[WearGeometry, SourceInfo
 
 function loaded() {
   const span = Math.max(...[0, 2].map(a => Math.max(info![0].max[a], info![1].max[a]) - Math.min(info![0].min[a], info![1].min[a])));
-  send({ type: "loaded", upper: sources![0], lower: sources![1], info: info!, suggestedSpacing: Number((span / 400).toPrecision(2)) });
+  send({ type: "loaded", upper: sources![0], lower: sources![1], info: info!, suggestedSpacing: Number((span / 400).toPrecision(2)), crownRows });
 }
 
 async function frame(solveMs = 0) {
@@ -77,7 +81,7 @@ async function frame(solveMs = 0) {
   }
   const transfer = [upper.positions.buffer, upper.colors.buffer, upper.normals.buffer, lower.positions.buffer, lower.colors.buffer, lower.normals.buffer];
   if (trace) transfer.push(trace.pathPositions.buffer, trace.contactPositions.buffer);
-  send({ type: "frame", upper, lower, snapshot: getWearSnapshot(state!), warnings: [...state!.warnings, ...(cycle?.warnings ?? [])], grid: state!.grid, preparation: { autoOpen: settings.autoOpen, upperPose: settings.upperPose }, trace, traceRequestId: trace ? traceRequestId : undefined, mode: settings.mode, cycle,
+  send({ type: "frame", upper, lower, snapshot: getWearSnapshot(state!), warnings: [...state!.warnings, ...(cycle?.warnings ?? [])], grid: state!.grid, preparation: { autoOpen: settings.autoOpen, upperPose: settings.upperPose, lowerPose: settings.lowerPose, crownRotations: settings.crownRotations, crownPitch: settings.crownPitch }, trace, traceRequestId: trace ? traceRequestId : undefined, mode: settings.mode, cycle,
     timings: { solveMs, meshMs, previewMs: performance.now() - previewStart } }, transfer);
 }
 
@@ -96,12 +100,24 @@ async function handleMessage(message: WearRequest) {
         const rows = await Promise.all(message.sources.map(readSource));
         // The file names do not identify anatomy; use Y centre and expose Swap in the GUI.
         rows.sort((a, b) => (b[1].min[1] + b[1].max[1]) - (a[1].min[1] + a[1].max[1]));
-        sources = [rows[0][0], rows[1][0]];
-        info = [rows[0][1], rows[1][1]];
+        const nextSources: [WearGeometry, WearGeometry] = message.kind === "crowns"
+          ? [indexCrownGeometry(rows[0][0]), indexCrownGeometry(rows[1][0])]
+          : [rows[0][0], rows[1][0]];
+        const nextLayouts = message.kind === "crowns" ? createCrownRows(...nextSources) : undefined;
+        sources = nextSources;
+        crownRows = nextLayouts;
+        info = rows.map(([geometry, sourceInfo], row) => nextLayouts ? {
+          ...sourceInfo, min: nextLayouts[row].min, max: nextLayouts[row].max,
+          vertices: nextSources[row].positions.length / 3 * 6 + nextLayouts[row].base.positions.length / 3,
+          triangles: (geometry.indices?.length ?? geometry.positions.length / 3) / 3 * 6 + 12,
+        } : sourceInfo) as [SourceInfo, SourceInfo];
         state = undefined;
         cycle = undefined;
         traceSettings = undefined;
         settings.upperPose = identityUpperSetupPose();
+        settings.lowerPose = identityUpperSetupPose();
+        settings.crownRotations = identityCrownRotations();
+        settings.crownPitch = crownRows ? crownRowPitch(crownRows[0]) : 0;
         loaded();
         break;
       }
@@ -109,25 +125,46 @@ async function handleMessage(message: WearRequest) {
         if (!sources || !info) throw new Error("Load two toothrows first.");
         sources = [sources[1], sources[0]];
         info = [info[1], info[0]];
+        if (crownRows) crownRows = [crownRows[1], crownRows[0]];
         state = undefined;
         cycle = undefined;
         traceSettings = undefined;
         settings.upperPose = identityUpperSetupPose();
+        settings.lowerPose = identityUpperSetupPose();
+        settings.crownRotations = identityCrownRotations();
+        settings.crownPitch = crownRows ? crownRowPitch(crownRows[0]) : 0;
         loaded();
+        break;
+      }
+      case "crown-check": {
+        try {
+          if (!sources || !crownRows) throw new Error("Load single-crown rows first.");
+          send({ type: "crown-check", requestId: message.requestId, result: checkCrownSpacing(sources, message.rotations, message.pitch) });
+        } catch (error) {
+          send({ type: "crown-check-error", requestId: message.requestId, message: error instanceof Error ? error.message : String(error) });
+        }
         break;
       }
       case "prepare":
       case "reset": {
         if (!sources || !info) throw new Error("Load two toothrows first.");
         const nextSettings = message.type === "prepare"
-          ? { spacing: message.spacing, autoOpen: message.autoOpen, contactSpread: message.mode === "cycles" ? 0 : message.contactSpread ?? 0, upperPose: message.upperPose ?? identityUpperSetupPose(), mode: message.mode ?? "geometric" as WearMode }
+          ? { spacing: message.spacing, autoOpen: message.autoOpen, contactSpread: message.mode === "cycles" ? 0 : message.contactSpread ?? 0, chipThickness: message.mode === "cycles" ? 0 : message.chipThickness ?? 0, upperPose: message.upperPose ?? identityUpperSetupPose(), lowerPose: message.lowerPose ?? identityUpperSetupPose(), crownRotations: message.crownRotations ?? identityCrownRotations(), crownPitch: message.crownPitch ?? (crownRows ? crownRowPitch(crownRows[0]) : 0), mode: message.mode ?? "geometric" as WearMode }
           : settings;
         if (!isValidUpperSetupPose(nextSettings.upperPose)) throw new Error("Upper setup translation and rotation must contain finite X, Y and Z values within representable model coordinates.");
-        const pivot = info[0].min.map((value, axis) => value + (info![0].max[axis] - value) / 2) as [number, number, number];
+        if (!isValidUpperSetupPose(nextSettings.lowerPose)) throw new Error("Lower setup translation and rotation must contain finite X, Y and Z values within representable model coordinates.");
+        if (!isValidCrownRotations(nextSettings.crownRotations)) throw new Error("Crown rotations must contain finite X, Y and Z angles for both rows.");
+        if (crownRows && !checkCrownSpacing(sources, nextSettings.crownRotations, nextSettings.crownPitch).clear) {
+          throw new Error("Neighboring crowns intersect or lack verified clearance. Increase Tooth spacing or use Space teeth to clear before preparing.");
+        }
+        const nextRows = crownRows ? spaceCrownRows(crownRows, nextSettings.crownPitch) : undefined;
+        const pivots = (nextRows ?? info).map(row => row.min.map((value, axis) => value + (row.max[axis] - value) / 2) as [number, number, number]);
         // Always transform the raw source, including on reset. Sampled surfaces already
         // include this pose and automatic opening; closure is the only later translation.
-        const upper = transformUpperGeometry(sources[0], nextSettings.upperPose, pivot);
-        state = prepareWear(upper, sources[1], { spacing: nextSettings.spacing, autoOpen: nextSettings.autoOpen, contactSpread: nextSettings.contactSpread,
+        const rowGeometry = sources.map((source, row) => nextRows ? bakeCrownRow(source, nextRows[row], nextSettings.crownRotations[row]) : source);
+        const upper = transformUpperGeometry(rowGeometry[0], nextSettings.upperPose, pivots[0]);
+        const lower = transformUpperGeometry(rowGeometry[1], nextSettings.lowerPose, pivots[1]);
+        state = prepareWear(upper, lower, { spacing: nextSettings.spacing, autoOpen: nextSettings.autoOpen, contactSpread: nextSettings.contactSpread, chipThickness: nextSettings.chipThickness,
           onProgress: (fraction, stage) => send({ type: "progress", fraction, message: stage }) });
         cycle = nextSettings.mode === "cycles" ? emptyBiteCycleMetrics() : undefined;
         if (nextSettings.mode === "cycles") {
@@ -138,7 +175,9 @@ async function handleMessage(message: WearRequest) {
         }
         settings = { ...nextSettings, upperPose: {
           translation: [...nextSettings.upperPose.translation], rotation: [...nextSettings.upperPose.rotation],
-        } };
+        }, lowerPose: {
+          translation: [...nextSettings.lowerPose.translation], rotation: [...nextSettings.lowerPose.rotation],
+        }, crownRotations: [[...nextSettings.crownRotations[0]], [...nextSettings.crownRotations[1]]] };
         await frame();
         break;
       }

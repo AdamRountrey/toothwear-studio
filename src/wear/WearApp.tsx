@@ -6,10 +6,21 @@ import type { ComputePreference, SourceInfo, WearComputeStatus, WearRequest, Wea
 import type { VegetationTrace } from "./slidingVegetation";
 import { identityUpperSetupPose, isValidUpperSetupPose, type UpperSetupPose } from "./upperPose";
 import { createDefaultBiteCycleSettings, validateBiteCycleSettings, type BiteCycleMetrics, type BiteCycleSettings } from "./biteCycles";
+import { makeCrownMatrices, crownRowPitch, spaceCrownRows, type CrownRowLayout } from "./crownRows";
+import type { CrownSpacingCheck } from "./crownSpacing";
+import nonImbricatedPreset from "./presets/nonImbricated.json";
+import s128Preset from "./presets/s128.json";
+import y13S083Preset from "./presets/y13S083.json";
+import { crownRotationForAngles, estimateCrownReference, measureCrownInclination, type CrownAngleTarget } from "./crownOrientation";
+import { CrownAngles } from "./CrownAngles";
 
+type Row = "upper" | "lower";
+type Rotation = [number, number, number];
+type SetupTarget = Row | "upper-crown" | "lower-crown" | "hinge";
+const identityCrownRotations = (): [Rotation, Rotation] => [[0, 0, 0], [0, 0, 0]];
 const usageNotice = "Experimental — not for research use. Simulated wear has not been validated.";
 
-type HistoryPoint = { closure: number; upper: number; lower: number; contact: number; contactUpper: number; contactLower: number; vegetationPull: number; vegetationUpper: number; vegetationLower: number; vegetationSettings: VegetationSettings | null };
+type HistoryPoint = { closure: number; upper: number; lower: number; contact: number; contactUpper: number; contactLower: number; chippedUpper: number; chippedLower: number; vegetationPull: number; vegetationUpper: number; vegetationLower: number; vegetationSettings: VegetationSettings | null };
 const format = (value: number | undefined, digits = 2) => value === undefined || !Number.isFinite(value) ? "—" : value.toLocaleString(undefined, { maximumFractionDigits: digits });
 const duration = (milliseconds: number) => milliseconds < 1000 ? `${format(milliseconds, 0)} ms` : `${format(milliseconds / 1000, 2)} s`;
 const download = (data: BlobPart, name: string, type: string) => {
@@ -31,11 +42,27 @@ export function WearApp() {
   const [info, setInfo] = useState<[SourceInfo, SourceInfo] | null>(null);
   const [upperPose, setUpperPose] = useState<UpperSetupPose>(identityUpperSetupPose);
   const [upperPoseMode, setUpperPoseMode] = useState<"translate" | "rotate" | null>("translate");
+  const [lowerPose, setLowerPose] = useState<UpperSetupPose>(identityUpperSetupPose);
+  const [lowerPoseMode, setLowerPoseMode] = useState<"translate" | "rotate" | null>(null);
+  const [sourceCrownRows, setCrownRows] = useState<[CrownRowLayout, CrownRowLayout] | null>(null);
+  const [crownPitch, setCrownPitch] = useState(27);
+  const validCrownPitch = Number.isFinite(crownPitch) && crownPitch > 0 && crownPitch <= 1e6;
+  const crownRows = useMemo(() => sourceCrownRows ? spaceCrownRows(sourceCrownRows, validCrownPitch ? crownPitch : crownRowPitch(sourceCrownRows[0])) : null, [sourceCrownRows, crownPitch, validCrownPitch]);
+  const [crownRotations, setCrownRotations] = useState<[Rotation, Rotation]>(identityCrownRotations);
+  const crownCheckKey = JSON.stringify([crownPitch, crownRotations]);
+  const crownCheckRequest = useRef({ id: 0, key: "" });
+  const [crownCheck, setCrownCheck] = useState<{ key: string; result: CrownSpacingCheck } | null>(null);
+  const [crownCheckError, setCrownCheckError] = useState("");
+  const currentCrownCheck = crownCheck?.key === crownCheckKey ? crownCheck.result : null;
+  const validCrownSpacing = !sourceCrownRows || validCrownPitch && currentCrownCheck?.clear === true;
+  const [selectedCrowns, setSelectedCrowns] = useState<[number, number]>([2, 2]);
+  const [crownEditing, setCrownEditing] = useState(false);
+  const [importKind, setImportKind] = useState<"rows" | "crowns">("rows");
   const [mode, setMode] = useState<"geometric" | "cycles">("geometric");
   const [cycleSettings, setCycleSettings] = useState<BiteCycleSettings>(() => createDefaultBiteCycleSettings({ min: [-1, -1, -1], max: [1, 1, 1] }, 0.5));
   const [cycle, setCycle] = useState<BiteCycleMetrics | null>(null);
   const [cycleTarget, setCycleTarget] = useState(10);
-  const [setupTarget, setSetupTarget] = useState<"upper" | "hinge">("upper");
+  const [setupTarget, setSetupTarget] = useState<SetupTarget>("upper");
   const [hingeMode, setHingeMode] = useState<"translate" | "rotate" | null>(null);
   const [hingePreview, setHingePreview] = useState(0);
   const [showHinge, setShowHinge] = useState(true);
@@ -43,8 +70,25 @@ export function WearApp() {
   const rowAxis = info && info[0].max[2] - info[0].min[2] > info[0].max[0] - info[0].min[0] ? "Z" : "X";
   const upperPreviewPose = useRef<UpperSetupPose>(identityUpperSetupPose());
   const upperPivot = useMemo<[number, number, number]>(() => info
-    ? [0, 1, 2].map(axis => (info[0].min[axis] + info[0].max[axis]) / 2) as [number, number, number]
-    : [0, 0, 0], [info]);
+    ? [0, 1, 2].map(axis => ((crownRows ?? info)[0].min[axis] + (crownRows ?? info)[0].max[axis]) / 2) as [number, number, number]
+    : [0, 0, 0], [info, crownRows]);
+  const lowerPivot = useMemo<Rotation>(() => info
+    ? [0, 1, 2].map(axis => ((crownRows ?? info)[1].min[axis] + (crownRows ?? info)[1].max[axis]) / 2) as Rotation
+    : [0, 0, 0], [info, crownRows]);
+  const crownArrays = useMemo(() => crownRows && original ? {
+    upper: { crown: original[0], transforms: makeCrownMatrices(crownRows[0], crownRotations[0]), pivots: crownRows[0].centers, base: crownRows[0].base },
+    lower: { crown: original[1], transforms: makeCrownMatrices(crownRows[1], crownRotations[1]), pivots: crownRows[1].centers, base: crownRows[1].base },
+  } : undefined, [crownRows, original, crownRotations]);
+  const selectedRow: Row = setupTarget.startsWith("lower") ? "lower" : "upper";
+  const selectedRowIndex = selectedRow === "upper" ? 0 : 1;
+  const selectedPose = selectedRow === "upper" ? upperPose : lowerPose;
+  const eachCrownTarget = setupTarget.endsWith("-crown");
+  const crownReferences = useMemo(() => sourceCrownRows && original
+    ? original.map((mesh, row) => estimateCrownReference(mesh, row === 0 ? "upper" : "lower")) : null, [sourceCrownRows, original]);
+  const crownInclinations = useMemo(() => crownReferences?.map((reference, row) => reference
+    ? measureCrownInclination(reference, crownRotations[row], row === 0 ? upperPose.rotation : lowerPose.rotation, row === 0 ? "upper" : "lower") : null),
+    [crownReferences, crownRotations, upperPose.rotation, lowerPose.rotation]);
+  const activeSetupMode = setupTarget === "hinge" ? hingeMode : eachCrownTarget ? crownEditing ? "rotate" : null : selectedRow === "upper" ? upperPoseMode : lowerPoseMode;
   const [files, setFiles] = useState<[File | null, File | null]>([null, null]);
   const [snapshot, setSnapshot] = useState<WearSnapshot | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
@@ -61,6 +105,7 @@ export function WearApp() {
   const [timings, setTimings] = useState<WearTimings | null>(null);
   const [spacing, setSpacing] = useState(0.5);
   const [contactSpread, setContactSpread] = useState(0);
+  const [chipThickness, setChipThickness] = useState(0);
   const [step, setStep] = useState(0.25);
   const [depth, setDepth] = useState(5);
   const [stopMode, setStopMode] = useState<"contact" | "total">("contact");
@@ -103,8 +148,9 @@ export function WearApp() {
   const target = depth + (stopMode === "contact" ? first : 0);
   const closure = snapshot?.closure ?? 0;
   const isCycles = mode === "cycles";
-  const maxContactSpread = Number.isFinite(spacing) && spacing > 0 ? spacing * 2 / 3 : 0;
+  const maxContactSpread = Number.isFinite(spacing) && spacing > 0 ? spacing * 16 / 3 : 0;
   const validContactSpread = isCycles || Number.isFinite(contactSpread) && contactSpread >= 0 && contactSpread <= maxContactSpread;
+  const validChipping = isCycles || Number.isFinite(chipThickness) && chipThickness >= 0 && chipThickness <= spacing * 8 && !(chipThickness > 0 && vegetationEnabled);
   const gaussianPrepared = !isCycles && (snapshot?.contactSpread ?? 0) > 0;
   let cycleSettingsError = "";
   try { validateBiteCycleSettings(cycleSettings); } catch (cause) { cycleSettingsError = cause instanceof Error ? cause.message : "Check bite-cycle settings."; }
@@ -114,11 +160,12 @@ export function WearApp() {
     : Number.isFinite(target) && depth > 0 && Number.isFinite(step) && step > 0 && (!vegetationEnabled || validVegetation);
   const locked = busy || running || workerFailed || computeSwitching;
   const vegetationStarted = (snapshot?.vegetation.pullDistance ?? 0) > 0;
-  const vegetationLocked = locked || vegetationStarted || isCycles;
+  const vegetationLocked = locked || vegetationStarted || isCycles || chipThickness > 0;
   const setupStarted = isCycles ? completedCycles > 0 : closure > 0 || vegetationStarted;
   const poseLocked = locked || !original || setupStarted;
   const cycleSettingsLocked = locked || completedCycles > 0;
   const validUpperPose = isValidUpperSetupPose(upperPose);
+  const validSetup = validUpperPose && isValidUpperSetupPose(lowerPose);
   if (validUpperPose) upperPreviewPose.current = upperPose;
   settings.current = { target, step, share: share / 100, vegetation: vegetationEnabled && !isCycles ? vegetationSettings : undefined, mode, cycleTarget, cycleSettings };
 
@@ -132,6 +179,9 @@ export function WearApp() {
     setOriginal(null); setSurfaces(null); setInfo(null); setSnapshot(null);
     setUpperPose(identityUpperSetupPose());
     setUpperPoseMode("translate");
+    setLowerPose(identityUpperSetupPose()); setLowerPoseMode(null);
+    setCrownRows(null); setCrownRotations(identityCrownRotations()); setCrownEditing(false); setSelectedCrowns([2, 2]);
+    setCrownCheck(null); setCrownCheckError(""); crownCheckRequest.current.id++;
     setCycle(null); setHingeMode(null); setHingePreview(0); setSetupTarget("upper");
     setHistory([]); setWarnings([]); setGrid(null); setDirty(false);
     setBusy(false); setRunning(false); setError(""); setProgress(0); setWorkerFailed(false);
@@ -141,6 +191,11 @@ export function WearApp() {
     initializeVegetationBand.current = true;
     const instance = new Worker(new URL("./wear.worker.ts", import.meta.url), { type: "module" });
     worker.current = instance;
+    // An explicit launch link starts a fresh, unworn setup in this tab only.
+    const presetId = new URLSearchParams(window.location.search).get("preset")?.toLowerCase();
+    const launchPreset = presetId === "non-imbricated" ? nonImbricatedPreset
+      : presetId === "s128" ? s128Preset : presetId === "y13-s083" ? y13S083Preset : null;
+    let presetPending = !!launchPreset;
     const fail = (message: string) => {
       run.current = false; manualPullPending.current = false; setRunning(false); setBusy(false); setComputeSwitching(false); setError(message); setStatus("Check the setup and try again.");
     };
@@ -150,6 +205,13 @@ export function WearApp() {
     };
     instance.onmessage = (event: MessageEvent<WearResponse>) => {
       const message = event.data;
+      if (message.type === "crown-check" || message.type === "crown-check-error") {
+        if (message.requestId === crownCheckRequest.current.id) {
+          setCrownCheck(message.type === "crown-check" ? { key: crownCheckRequest.current.key, result: message.result } : null);
+          setCrownCheckError(message.type === "crown-check-error" ? message.message : "");
+        }
+        return;
+      }
       if (message.type === "compute-status") { setCompute(message.status); setComputeSwitching(message.status.backend === "initializing"); return; }
       if (message.type === "trace") {
         if (message.requestId === traceRequestId.current) { setVegetationTrace(message.trace); setTraceLoading(false); setTraceError(""); }
@@ -169,6 +231,9 @@ export function WearApp() {
         setOriginal([message.upper, message.lower]); setSurfaces(null); setInfo(message.info);
         setUpperPose(identityUpperSetupPose());
         setUpperPoseMode("translate");
+        setLowerPose(identityUpperSetupPose()); setLowerPoseMode(null);
+        setCrownRows(message.crownRows ?? null); setCrownRotations(identityCrownRotations()); setCrownEditing(false); setSelectedCrowns([2, 2]);
+        setCrownPitch(message.crownRows ? crownRowPitch(message.crownRows[0]) : 27); setCrownCheck(null); setCrownCheckError("");
         setCycle(null); setHingeMode(null); setHingePreview(0); setSetupTarget("upper");
         setCycleSettings(createDefaultBiteCycleSettings(message.info[0], message.suggestedSpacing));
         setHingePreset("negative");
@@ -179,7 +244,26 @@ export function WearApp() {
         setVegetationBendReach(message.suggestedSpacing * 5);
         initializeVegetationBand.current = true;
         setBusy(false); setProgress(0); setFitKey(key => key + 1);
-        setStatus("Surfaces loaded. Adjust the upper-row setup pose, then prepare the wear grid."); return;
+        setStatus(message.crownRows ? "Six upper and six lower crowns ready. Select a whole row or rotate each crown together, then prepare the wear grid." : "Surfaces loaded. Adjust the row setup poses, then prepare the wear grid.");
+        if (presetPending && launchPreset && message.crownRows) {
+          presetPending = false;
+          const { setup, settings: p } = launchPreset;
+          const upper = { translation: setup.upper.translation, rotation: setup.upper.rotationDegrees };
+          const lower = { translation: setup.lower.translation, rotation: setup.lower.rotationDegrees };
+          if (!isValidUpperSetupPose(upper) || !isValidUpperSetupPose(lower)) { fail("Invalid saved crown setup."); return; }
+          const rotations = setup.crowns.rotationsDegrees as [Rotation, Rotation];
+          setUpperPose(upper); setLowerPose(lower); setUpperPoseMode(null); setLowerPoseMode(null);
+          setCrownRotations(rotations); setCrownPitch(setup.crowns.pitch);
+          setMode("geometric"); setSpacing(p.spacing); setContactSpread(p.contactSpread); setChipThickness(p.chipThickness);
+          setAutoOpen(p.autoOpen); setShare(p.upperWearShare * 100); setStep(p.increment);
+          setStopMode(p.stopMode === "total" ? "total" : "contact"); setDepth(p.stopDistance); setVegetationEnabled(false);
+          setBusy(true); setStatus(`Preparing ${launchPreset.name}: restoring crown poses, spacing, and wear settings.`);
+          // The worker independently checks crown clearance before sampling.
+          instance.postMessage({ type: "prepare", spacing: p.spacing, autoOpen: p.autoOpen,
+            contactSpread: p.contactSpread, chipThickness: p.chipThickness, upperPose: upper, lowerPose: lower,
+            crownRotations: rotations, crownPitch: setup.crowns.pitch, mode: "geometric" } satisfies WearRequest);
+        }
+        return;
       }
       if (message.type === "frame") {
         setCycle(message.cycle ?? null);
@@ -191,12 +275,21 @@ export function WearApp() {
         const s = message.snapshot;
         setSpacing(message.grid.spacing);
         if (message.mode) setMode(message.mode);
-        if (message.preparation) { setAutoOpen(message.preparation.autoOpen); setUpperPose(message.preparation.upperPose); }
-        if (message.mode !== "cycles") setContactSpread(s.contactSpread ?? 0);
+        if (message.preparation) {
+          setAutoOpen(message.preparation.autoOpen); setUpperPose(message.preparation.upperPose);
+          setLowerPose(message.preparation.lowerPose ?? identityUpperSetupPose());
+          setCrownRotations(message.preparation.crownRotations ?? identityCrownRotations());
+          if (message.preparation.crownPitch) setCrownPitch(message.preparation.crownPitch);
+        }
+        if (message.mode !== "cycles") {
+          setContactSpread(s.contactSpread ?? 0); setChipThickness(s.chipThickness ?? 0);
+          if ((s.chipThickness ?? 0) > 0) setVegetationEnabled(false);
+        }
         if (initializeVegetationBand.current) { setVegetationCenterY(Number(s.recommendedVegetationCenterY.toPrecision(7))); initializeVegetationBand.current = false; }
         setHistory(previous => {
           const point: HistoryPoint = { closure: message.mode === "cycles" ? message.cycle?.completedCycles ?? 0 : s.closure, upper: s.removedUpperVolume, lower: s.removedLowerVolume, contact: message.cycle?.contactArea ?? s.contactArea,
             contactUpper: s.contactRemovedUpperVolume, contactLower: s.contactRemovedLowerVolume,
+            chippedUpper: s.chippedUpperVolume ?? 0, chippedLower: s.chippedLowerVolume ?? 0,
             vegetationPull: s.vegetation.pullDistance, vegetationUpper: s.vegetation.removedUpperVolume, vegetationLower: s.vegetation.removedLowerVolume, vegetationSettings: s.vegetation.settings };
           if (message.mode === "cycles" ? !message.cycle?.completedCycles : s.closure === 0 && s.vegetation.pullDistance === 0) return [point];
           const last = previous.at(-1);
@@ -237,8 +330,24 @@ export function WearApp() {
         } else { run.current = false; setRunning(false); }
       }
     };
+    if (launchPreset) {
+      setBusy(true); setStatus(`Loading ${launchPreset.name} · six teeth per row…`);
+      instance.postMessage({ type: "load", kind: "crowns", sources: [
+        { name: launchPreset.sources[0], url: new URL(`${import.meta.env.BASE_URL}models/${launchPreset.sources[0]}`, document.baseURI).href },
+        { name: launchPreset.sources[1], url: new URL(`${import.meta.env.BASE_URL}models/${launchPreset.sources[1]}`, document.baseURI).href },
+      ] } satisfies WearRequest);
+    }
     return () => { run.current = false; window.clearTimeout(timer.current); instance.terminate(); worker.current = undefined; };
   }, []);
+
+  useEffect(() => {
+    const requestId = ++crownCheckRequest.current.id;
+    crownCheckRequest.current.key = crownCheckKey;
+    setCrownCheck(null); setCrownCheckError("");
+    if (!sourceCrownRows || !validCrownPitch || workerFailed) return;
+    const debounce = window.setTimeout(() => post({ type: "crown-check", requestId, pitch: crownPitch, rotations: crownRotations }), 250);
+    return () => { window.clearTimeout(debounce); if (crownCheckRequest.current.id === requestId) crownCheckRequest.current.id++; };
+  }, [sourceCrownRows, crownCheckKey, validCrownPitch, workerFailed]);
 
   const preparedForTrace = !!snapshot && !dirty;
   const wantsTrace = !isCycles && vegetationEnabled && (showVegetationPaths || showSlidingContacts);
@@ -260,53 +369,106 @@ export function WearApp() {
   const load = (local: boolean) => {
     clearTrace();
     pause(); setBusy(true); setError(""); setStatus("Reading toothrow files…"); setProgress(0);
-    post({ type: "load", sources: local ? [
+    post({ type: "load", kind: !local && importKind === "crowns" ? "crowns" : undefined, sources: local ? [
       { name: "1aligned.ply", url: new URL(`${import.meta.env.BASE_URL}models/1aligned.ply`, document.baseURI).href }, { name: "2aligned.ply", url: new URL(`${import.meta.env.BASE_URL}models/2aligned.ply`, document.baseURI).href }
     ] : [{ name: files[0]!.name, file: files[0]! }, { name: files[1]!.name, file: files[1]! }] });
   };
+  const loadCrowns = () => {
+    clearTrace(); pause(); setBusy(true); setError(""); setStatus("Loading single crowns and building six teeth per row…"); setProgress(0);
+    post({ type: "load", kind: "crowns", sources: [
+      { name: "Camarasaurus_crown_hole_upper.stl", url: new URL(`${import.meta.env.BASE_URL}models/Camarasaurus_crown_hole_upper.stl`, document.baseURI).href },
+      { name: "Camarasaurus_crown_hole_lower.stl", url: new URL(`${import.meta.env.BASE_URL}models/Camarasaurus_crown_hole_lower.stl`, document.baseURI).href },
+    ] });
+  };
+  const stopSetupTools = () => { setUpperPoseMode(null); setLowerPoseMode(null); setCrownEditing(false); setHingeMode(null); };
   const prepare = (reset = false) => {
-    if (!original || locked || !reset && (!validUpperPose || !validContactSpread || !Number.isFinite(spacing) || spacing <= 0)) return;
+    if (!original || locked || !reset && (!validSetup || !validCrownSpacing || !validContactSpread || !validChipping || !Number.isFinite(spacing) || spacing <= 0)) return;
     clearTrace();
     pause(); setBusy(true); setError(""); setStatus("Sampling solid tooth geometry…"); setProgress(0);
     setSnapshot(null); setSurfaces(null); setHistory([]); setTimings(null);
-    setCycle(null); setHingePreview(0); setHingeMode(null); setUpperPoseMode(null);
-    post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, contactSpread: isCycles ? 0 : contactSpread, upperPose, mode });
+    setCycle(null); setHingePreview(0); stopSetupTools();
+    post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, contactSpread: isCycles ? 0 : contactSpread, chipThickness: isCycles ? 0 : chipThickness, upperPose, lowerPose, crownRotations, crownPitch, mode });
   };
-  const changeUpperPose = (next: UpperSetupPose) => {
-    if (poseLocked) return;
-    if (!isValidUpperSetupPose(next)) { setError("Upper setup pose must contain finite translation and rotation values."); return; }
+  const invalidateSetup = (message: string) => {
     clearTrace();
-    setUpperPose(next); setDirty(true); setError("");
+    setDirty(true); setError("");
     // A setup edit invalidates sampling. Preview raw sources in the new pose;
     // simulation and exports stay unavailable until that pose is prepared.
     setSnapshot(null); setSurfaces(null); setHistory([]); setGrid(null); setWarnings([]); setTimings(null); setCycle(null); setHingePreview(0);
-    setStatus("Upper-row setup preview. Prepare the wear grid to apply this pose.");
+    setStatus(message);
   };
-  const restoreUpperPose = async (file: File) => {
+  const changeRowPose = (row: Row, next: UpperSetupPose) => {
+    if (poseLocked) return;
+    if (!isValidUpperSetupPose(next)) { setError("Setup pose must contain finite translation and rotation values."); return; }
+    (row === "upper" ? setUpperPose : setLowerPose)(next);
+    invalidateSetup("Whole-row setup preview. Prepare the wear grid to apply this pose.");
+  };
+  const changeUpperPose = (next: UpperSetupPose) => changeRowPose("upper", next);
+  const changeLowerPose = (next: UpperSetupPose) => changeRowPose("lower", next);
+  const changeCrownRotation = (row: Row, rotation: Rotation) => {
+    if (poseLocked || !crownRows) return;
+    if (!isValidUpperSetupPose({ translation: [0, 0, 0], rotation })) return;
+    setCrownRotations(current => row === "upper" ? [[...rotation], current[1]] : [current[0], [...rotation]]);
+    invalidateSetup(`All six ${row} crowns rotate about their own centers. Prepare the wear grid to apply this tilt.`);
+  };
+  const changeCrownAngles = (row: Row, target: CrownAngleTarget): string | null => {
+    if (poseLocked) return "Reset to unworn geometry before editing the setup.";
+    const index = row === "upper" ? 0 : 1, reference = crownReferences?.[index];
+    if (!reference) return "A long axis could not be measured for this crown.";
+    try {
+      const rotation = crownRotationForAngles(reference, crownRotations[index], row === "upper" ? upperPose.rotation : lowerPose.rotation, row, target);
+      stopSetupTools(); setSetupTarget(`${row}-crown`); setCrownEditing(true);
+      changeCrownRotation(row, rotation);
+      return null;
+    } catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
+  };
+  const changeCrownPitch = (value: number) => {
+    if (poseLocked || !sourceCrownRows) return;
+    setCrownPitch(value);
+    invalidateSetup("Tooth spacing changed. Checking crown clearance before preparation.");
+  };
+  const restoreSetup = async (file: File) => {
     if (poseLocked) return;
     setBusy(true); setError("");
     try {
-      const report = JSON.parse(await file.text()) as { setup?: { upper?: { translation?: unknown; rotationDegrees?: unknown } } } | null;
+      const report = JSON.parse(await file.text()) as { setup?: { upper?: { translation?: unknown; rotationDegrees?: unknown }; lower?: { translation?: unknown; rotationDegrees?: unknown }; crowns?: { rotationsDegrees?: unknown; pitch?: unknown } } } | null;
       const pose = { translation: report?.setup?.upper?.translation, rotation: report?.setup?.upper?.rotationDegrees };
       if (!isValidUpperSetupPose(pose)) throw new Error("This JSON does not contain a valid exported upper-row setup pose.");
-      changeUpperPose({ translation: [...pose.translation], rotation: [...pose.rotation] });
-      setStatus("Restored the upper-row setup pose. Prepare the grid to apply it; worn material and run settings were not restored.");
+      const lower = report?.setup?.lower ? { translation: report.setup.lower.translation, rotation: report.setup.lower.rotationDegrees } : identityUpperSetupPose();
+      if (!isValidUpperSetupPose(lower)) throw new Error("This JSON does not contain a valid lower-row setup pose.");
+      const rotations = report?.setup?.crowns?.rotationsDegrees ?? identityCrownRotations();
+      if (report?.setup?.crowns && !crownRows) throw new Error("Load the single-crown arrays before restoring this crown setup.");
+      if (!Array.isArray(rotations) || rotations.length !== 2 || !rotations.every(rotation => isValidUpperSetupPose({ translation: [0, 0, 0], rotation }))) throw new Error("This JSON does not contain valid crown rotations.");
+      const restoredPitch = report?.setup?.crowns?.pitch ?? (sourceCrownRows ? crownRowPitch(sourceCrownRows[0]) : 27);
+      if (typeof restoredPitch !== "number" || !Number.isFinite(restoredPitch) || restoredPitch <= 0 || restoredPitch > 1e6) throw new Error("This JSON does not contain valid tooth spacing.");
+      setUpperPose({ translation: [...pose.translation], rotation: [...pose.rotation] });
+      setLowerPose({ translation: [...lower.translation], rotation: [...lower.rotation] });
+      setCrownRotations(rotations as [Rotation, Rotation]);
+      setCrownPitch(restoredPitch);
+      invalidateSetup("Restored row poses and crown tilts. Prepare the grid to apply them; worn material and run settings were not restored.");
     } catch (cause) {
       setError(cause instanceof SyntaxError ? "Choose a valid run-settings JSON file." : cause instanceof Error ? cause.message : String(cause));
     } finally { setBusy(false); }
   };
-  const editUpperPose = (mode: "translate" | "rotate") => {
+  const editSetup = (mode: "translate" | "rotate", target: SetupTarget = setupTarget) => {
     if (poseLocked) return;
-    setSetupTarget("upper"); setHingeMode(null); setHingePreview(0);
+    stopSetupTools(); setSetupTarget(target); setHingePreview(0);
+    if (target === "hinge") { setHingeMode(mode); setShowHinge(true); return; }
     // Return to the raw setup pose before showing the handles. An automatic
     // opening belongs to preparation, never to the user's rigid transform.
-    if (surfaces) changeUpperPose(upperPose);
-    setUpperPoseMode(mode);
+    if (surfaces) invalidateSetup("Setup preview. Prepare the wear grid to apply the edited geometry.");
+    if (target.endsWith("-crown")) { if (crownRows) setCrownEditing(true); }
+    else (target === "upper" ? setUpperPoseMode : setLowerPoseMode)(mode);
+  };
+  const selectCrown = (row: Row, index: number) => {
+    if (poseLocked || !crownRows) return;
+    setSelectedCrowns(current => row === "upper" ? [index, current[1]] : [current[0], index]);
+    editSetup("rotate", `${row}-crown`);
   };
   const advance = (continuous: boolean) => {
     if (!snapshot || !validRun || dirty || complete || locked) return;
     setError(""); run.current = continuous; setRunning(continuous); setBusy(true);
-    setHingePreview(0); setHingeMode(null); setUpperPoseMode(null);
+    setHingePreview(0); stopSetupTools();
     if (isCycles) post({ type: "cycles", count: 1, settings: cycleSettings });
     else post({ type: "advance", target: Math.min(target, closure + step), share: share / 100, vegetation: settings.current.vegetation });
   };
@@ -329,7 +491,7 @@ export function WearApp() {
   const changeMode = (next: "geometric" | "cycles") => {
     if (locked || next === mode) return;
     clearTrace(); setMode(next); setSnapshot(null); setSurfaces(null); setCycle(null); setHistory([]); setGrid(null);
-    setTimings(null); setWarnings([]); setError(""); setDirty(true); setHingePreview(0); setUpperPoseMode(null);
+    setTimings(null); setWarnings([]); setError(""); setDirty(true); setHingePreview(0); stopSetupTools();
     setSetupTarget(next === "cycles" ? "hinge" : "upper"); setHingeMode(null);
     setFitKey(key => key + 1);
     setStatus("Prepare the wear grid for the selected simulation mode. Switching modes starts from unworn geometry.");
@@ -339,8 +501,7 @@ export function WearApp() {
     setCycleSettings(current => ({ ...current, [key]: value })); setError("");
   };
   const editHinge = (next: "translate" | "rotate") => {
-    if (poseLocked) return;
-    setSetupTarget("hinge"); setUpperPoseMode(null); setHingeMode(next); setShowHinge(true); setHingePreview(0);
+    editSetup(next, "hinge");
   };
   const placeHinge = (preset: "negative" | "positive" | "custom") => {
     if (!info || cycleSettingsLocked) return;
@@ -349,20 +510,24 @@ export function WearApp() {
     const suggested = createDefaultBiteCycleSettings(info[0], spacing, preset === "negative" ? -1 : 1);
     setCycleSettings(current => ({ ...current, hingeOrigin: suggested.hingeOrigin, hingeAxis: suggested.hingeAxis,
       openingAngle: Math.abs(current.openingAngle || 8) * Math.sign(suggested.openingAngle) }));
-    setHingePreview(0); setShowHinge(true); setSetupTarget("hinge"); setUpperPoseMode(null); setHingeMode("rotate");
+    setHingePreview(0); setShowHinge(true); setSetupTarget("hinge"); stopSetupTools(); setHingeMode("rotate");
     setFitKey(key => key + 1);
   };
   const exportReport = () => {
     setHingePreview(0);
-    download(JSON.stringify({ application: "Toothwear Studio", version: 9, usageNotice, mode, vegetationModel: "continuous-finite-bundle-sliding-v3", model: isCycles
+    download(JSON.stringify({ application: "Toothwear Studio", version: 12, usageNotice, mode, chippingModel: "contact-seeded-axis-width-cap-trimming-v1", vegetationModel: "continuous-finite-bundle-sliding-v3", model: isCycles
       ? "Repeated hinge opening and closing about a common closed reference pose, with compliant distributed contact pressure and Archard wear depth = coefficient × pressure × sliding distance. Uncalibrated mechanical approximation; no plant coupling or biological timescale."
       : `Geometric mutual contact wear. Contact spread sigma ${(snapshot?.contactSpread ?? 0) > 0 ? "enables normalized Gaussian-weighted neighboring grid-cell contact with a vertical-contact check; direct local overlap is still resolved" : "is zero, preserving exact same-cell contact"}. Contact spread is a geometric approximation, not contact pressure. Continuous fractional vegetation recession follows complete straight or bounded flexible sliding routes. Stream thickness is plant-bundle diameter; bundles can slide against multiple teeth and both rows at once. Total volume loss is geometric; the contact/vegetation split is estimated within each integration interval. No calibrated branch mechanics, forces, or biological wear rates.`,
       exportedAt: new Date().toISOString(), units: unit === "u" ? "native model units (unspecified)" : unit,
-      sources: info, grid, movement: isCycles ? "Upper setup pose is applied before sampling. A single common closed pose is established for the toothrow, then the upper rotates about the configured hinge. The lower stays fixed. Exported PLYs use the closed reference assembly pose; the opening preview is display-only." : "Upper setup pose is applied before sampling. During closure the upper translates along world -Y; lower stays fixed. Exported PLYs include setup pose, initial opening, and final closure.",
+      sources: info, grid, movement: isCycles ? "Both row setup poses and any local crown tilts are applied before sampling. A single common closed pose is established for the toothrow, then the upper rotates about the configured hinge. The lower stays fixed during simulation. Exported PLYs use the closed reference assembly pose; the opening preview is display-only." : "Both row setup poses and any local crown tilts are applied before sampling. During closure the upper translates along world -Y; lower stays fixed. Exported PLYs include setup poses, initial opening, and final closure.",
       setup: { upper: { translation: upperPose.translation, rotationDegrees: upperPose.rotation, pivot: upperPivot,
-        rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" } },
+        rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
+        lower: { translation: lowerPose.translation, rotationDegrees: lowerPose.rotation, pivot: lowerPivot, rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
+        crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
+          rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
+          orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. Edge yaw is a middle-section width-chord estimate, distinct from multi-section matrix scoring. Includes whole-row rotation; independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
       settings: isCycles ? { autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
-        : { autoOpen, contactSpread: snapshot?.contactSpread ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
+        : { autoOpen, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
       compute: { ...compute, latestFrameTimings: timings }, snapshot, cycle, warnings, history }, null, 2), "toothwear-run.json", "application/json");
   };
   const percent = snapshot && (isCycles ? cycleTarget : target) > 0 ? Math.min(100, isCycles ? completedCycles / cycleTarget * 100 : closure / target * 100) : 0;
@@ -387,6 +552,11 @@ export function WearApp() {
             originalUpper={original?.[0]} originalLower={original?.[1]}
             upperPose={upperPreviewPose.current} upperPivot={upperPivot} upperPoseBaked={!!surfaces}
             upperPoseMode={upperPoseMode} upperPoseEditable={!poseLocked} onUpperPoseChange={changeUpperPose}
+            lowerPose={lowerPose} lowerPivot={lowerPivot} lowerPoseBaked={!!surfaces}
+            lowerPoseMode={lowerPoseMode} lowerPoseEditable={!poseLocked} onLowerPoseChange={changeLowerPose}
+            crownArrays={crownArrays}
+            crownEdit={crownEditing && crownRows && eachCrownTarget ? { row: selectedRow, index: selectedCrowns[selectedRowIndex], rotation: crownRotations[selectedRowIndex] } : undefined}
+            onCrownSelect={selectCrown} onCrownRotationChange={changeCrownRotation}
             hinge={isCycles ? { origin: cycleSettings.hingeOrigin, axis: cycleSettings.hingeAxis, visible: showHinge } : undefined}
             hingeMode={hingeMode} hingeEditable={isCycles && !poseLocked}
             onHingeChange={(origin, axis) => { if (!poseLocked) { setCycleSettings(current => ({ ...current, hingeOrigin: origin, hingeAxis: axis })); setHingePreset("custom"); } }}
@@ -400,23 +570,33 @@ export function WearApp() {
               bendReach: vegetationPathMode === "flexible" ? vegetationBendReach : 0, visible: showVegetation } : undefined} />
           <div className="wear-stage-top"><div className="wear-view-tabs">{(["front", "perspective", "side", "top"] as WearView[]).map(v => <button key={v} className={view === v ? "selected" : ""} onClick={() => setView(v)}>{v === "perspective" ? "3D" : v}</button>)}</div><button className="wear-stage-button" onClick={() => setFitKey(k => k + 1)} title="Fit toothrows to view"><Focus size={16} /> Fit view</button></div>
           {original && !setupStarted && <div className="wear-transform-toolbar" role="group" aria-label="Toothrow and hinge setup tools">
-            {isCycles ? <select aria-label="Setup gizmo target" value={setupTarget} disabled={poseLocked} onChange={event => { const next = event.target.value as "upper" | "hinge"; setSetupTarget(next); setUpperPoseMode(null); setHingeMode(null); setHingePreview(0); }}><option value="upper">Upper row</option><option value="hinge">Jaw hinge</option></select> : <span>Upper row</span>}
-            <button aria-label={setupTarget === "hinge" && isCycles ? "Move jaw hinge" : "Move upper teeth"} aria-pressed={(setupTarget === "hinge" && isCycles ? hingeMode : upperPoseMode) === "translate"} className={(setupTarget === "hinge" && isCycles ? hingeMode : upperPoseMode) === "translate" ? "selected" : ""} disabled={poseLocked} onClick={() => setupTarget === "hinge" && isCycles ? editHinge("translate") : editUpperPose("translate")}><Move3d size={14} /> Move</button>
-            <button aria-label={setupTarget === "hinge" && isCycles ? "Rotate jaw hinge" : "Rotate upper teeth"} aria-pressed={(setupTarget === "hinge" && isCycles ? hingeMode : upperPoseMode) === "rotate"} className={(setupTarget === "hinge" && isCycles ? hingeMode : upperPoseMode) === "rotate" ? "selected" : ""} disabled={poseLocked} onClick={() => setupTarget === "hinge" && isCycles ? editHinge("rotate") : editUpperPose("rotate")}><Rotate3d size={14} /> Rotate</button>
-            <button aria-label="Finish positioning" disabled={poseLocked || upperPoseMode === null && hingeMode === null} onClick={() => { setUpperPoseMode(null); setHingeMode(null); }}><Check size={14} /> Done</button>
+            <select aria-label="Setup gizmo target" value={setupTarget} disabled={poseLocked} onChange={event => { const next = event.target.value as SetupTarget; editSetup(next.endsWith("-crown") ? "rotate" : "translate", next); }}>
+              <option value="upper">Whole upper row</option><option value="lower">Whole lower row</option>
+              {crownRows && <><option value="upper-crown">Each upper crown</option><option value="lower-crown">Each lower crown</option></>}
+              {isCycles && <option value="hinge">Jaw hinge</option>}
+            </select>
+            {eachCrownTarget && crownRows && <select aria-label="Crown carrying rotation gizmo" disabled={poseLocked} value={selectedCrowns[selectedRowIndex]} onChange={event => selectCrown(selectedRow, Number(event.target.value))}>{crownRows[selectedRowIndex].centers.map((_, i) => <option key={i} value={i}>Tooth {i + 1} of 6</option>)}</select>}
+            {!eachCrownTarget && <button aria-label={setupTarget === "hinge" ? "Move jaw hinge" : `Move ${selectedRow} teeth`} aria-pressed={activeSetupMode === "translate"} className={activeSetupMode === "translate" ? "selected" : ""} disabled={poseLocked} onClick={() => editSetup("translate")}><Move3d size={14} /> Move</button>}
+            <button aria-label={setupTarget === "hinge" ? "Rotate jaw hinge" : eachCrownTarget ? `Rotate each ${selectedRow} crown` : `Rotate ${selectedRow} teeth`} aria-pressed={activeSetupMode === "rotate"} className={activeSetupMode === "rotate" ? "selected" : ""} disabled={poseLocked} onClick={() => editSetup("rotate")}><Rotate3d size={14} />{eachCrownTarget ? "Rotate each" : "Rotate"}</button>
+            <button aria-label="Finish positioning" disabled={poseLocked || activeSetupMode === null} onClick={stopSetupTools}><Check size={14} /> Done</button>
           </div>}
-          {isCycles && original && <div className="wear-cycle-preview"><label><span>Opening preview <strong>{format(hingePreview * cycleSettings.openingAngle, 1)}°</strong></span><input aria-label="Jaw opening preview" type="range" min={0} max={1} step={0.01} value={hingePreview} disabled={locked || !Number.isFinite(cycleSettings.openingAngle)} onChange={event => { setHingePreview(Number(event.target.value)); setUpperPoseMode(null); setHingeMode(null); }} /></label><span>{hingePreview > 0 ? "Preview only · run and export return to closed pose" : "Closed reference pose · all teeth share this endpoint"}</span></div>}
-          {!original && <div className="wear-empty"><div className="wear-empty-icon"><Layers3 size={42} strokeWidth={1} /></div><span className="wear-eyebrow">FROM UNWORN TO OCCLUDED</span><h2>Let the contact<br />shape the teeth.</h2><p>Bring your aligned toothrows together along Y.<br />Wear develops wherever the two surfaces meet.</p><button className="wear-primary" disabled={locked} onClick={() => load(true)}><Upload size={16} /> Load example toothrows <ChevronRight size={16} /></button><small>Two example PLY files · 96 MB download</small></div>}
-          {original && <div className="wear-legend"><span><i className="upper" />Upper · {isCycles ? "hinged" : "moving −Y"}</span><span><i className="lower" />Lower · fixed</span><span><i className="worn" />Contact wear</span>{isCycles && showHinge && <span><i className="hinge" />Hinge axis</span>}{!isCycles && vegetationEnabled && <><span><i className="vegetation" />Vegetation wear</span>{showVegetationPaths && <span><i className="vegetation-path" />Computed paths</span>}{showSlidingContacts && <span><i className="sliding-contact" />Sliding now</span>}</>}</div>}
-          <div className="wear-stage-bottom"><span>Y ↑ <b>·</b> Drag to orbit <b>·</b> Scroll to zoom <b>·</b> Right drag to pan</span><span>{grid ? `${grid.nx} × ${grid.nz} columns · ${format(grid.spacing)} ${unit} pitch` : original ? "Upper-row setup preview" : "Source coordinates preserved"}</span></div>
+          {crownRows && !setupStarted && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
+          {isCycles && original && <div className="wear-cycle-preview"><label><span>Opening preview <strong>{format(hingePreview * cycleSettings.openingAngle, 1)}°</strong></span><input aria-label="Jaw opening preview" type="range" min={0} max={1} step={0.01} value={hingePreview} disabled={locked || !Number.isFinite(cycleSettings.openingAngle)} onChange={event => { setHingePreview(Number(event.target.value)); stopSetupTools(); }} /></label><span>{hingePreview > 0 ? "Preview only · run and export return to closed pose" : "Closed reference pose · all teeth share this endpoint"}</span></div>}
+          {!original && <div className="wear-empty"><div className="wear-empty-icon"><Layers3 size={42} strokeWidth={1} /></div><span className="wear-eyebrow">FROM UNWORN TO OCCLUDED</span><h2>Let the contact<br />shape the teeth.</h2><p>Bring your aligned toothrows together along Y.<br />Wear develops wherever the two surfaces meet.</p><button className="wear-primary" disabled={locked} onClick={loadCrowns}><Layers3 size={16} /> Build 6 × 6 crown rows <ChevronRight size={16} /></button><button className="wear-text-button" disabled={locked} onClick={() => load(true)}><Upload size={14} /> Load example toothrows</button><small>Two example PLY files · 96 MB download</small></div>}
+          {original && <div className="wear-legend"><span><i className="upper" />Upper · {isCycles ? "hinged" : "moving −Y"}</span><span><i className="lower" />Lower · fixed</span><span><i className="worn" />{(snapshot?.chipThickness ?? 0) > 0 ? "Contact wear + chips" : "Contact wear"}</span>{isCycles && showHinge && <span><i className="hinge" />Hinge axis</span>}{!isCycles && vegetationEnabled && <><span><i className="vegetation" />Vegetation wear</span>{showVegetationPaths && <span><i className="vegetation-path" />Computed paths</span>}{showSlidingContacts && <span><i className="sliding-contact" />Sliding now</span>}</>}</div>}
+          <div className="wear-stage-bottom"><span>Y ↑ <b>·</b> Drag to orbit <b>·</b> Scroll to zoom <b>·</b> Right drag to pan</span><span>{grid ? `${grid.nx} × ${grid.nz} columns · ${format(grid.spacing)} ${unit} pitch` : original ? crownRows ? "6 upper + 6 lower · linked crown rotations" : "Row setup preview" : "Source coordinates preserved"}</span></div>
         </section>
 
         <aside className="wear-rail">
           <section className="wear-section">
             <h2><span className="wear-section-number">01</span> Toothrow surfaces <Upload size={15} /></h2>
+            <button className="wear-secondary full wear-build-crowns" disabled={locked} onClick={loadCrowns}>Build 6 × 6 crown rows <span>STL × 2</span></button>
             <button className="wear-secondary full" disabled={locked} onClick={() => load(true)}>Load example toothrows <span>96 MB</span></button>
+            {crownRows && <p className="wear-note wear-crown-description">Six copies of each single crown on a base. Choose <strong>Each upper crown</strong> or <strong>Each lower crown</strong> to apply the same tilt to all six teeth in that row. Assignment follows Y position, regardless of filename.</p>}
             {info && <div className="wear-file-list">{info.map((row, i) => <div className="wear-file" key={i}><i className={i === 0 ? "upper" : "lower"} /><div><strong>{i === 0 ? "Upper" : "Lower"} <span>{row.name}</span></strong><small>{format(row.triangles, 0)} triangles</small></div><Check size={14} /></div>)}<button className="wear-text-button" disabled={locked} onClick={() => { clearTrace(); setBusy(true); setError(""); post({ type: "swap" }); }}><ArrowLeftRight size={13} /> Swap upper / lower assignment</button></div>}
-            <details className="wear-import" open><summary>Import your own aligned pair</summary><div>{[0, 1].map(i => <label key={i}>Surface {i + 1}<input aria-label={`Surface ${i + 1} file`} type="file" accept=".ply,.stl" disabled={locked} onChange={event => setFiles(current => { const next: [File | null, File | null] = [...current]; next[i] = event.target.files?.[0] ?? null; return next; })} /></label>)}<button className="wear-secondary full" onClick={() => load(false)} disabled={locked || !files[0] || !files[1]}>Load selected pair</button><p className="wear-note">Closed triangle PLY or STL. Files are processed in your browser and are not uploaded. Higher Y centre is assigned upper; use Swap if needed.</p></div></details>
+            <details className="wear-import" open><summary>Import your own aligned pair</summary><div>
+              <label className="wear-field"><span>Mesh contents</span><select aria-label="Imported mesh contents" disabled={locked} value={importKind} onChange={event => setImportKind(event.target.value as "rows" | "crowns")}><option value="rows">Complete toothrows</option><option value="crowns">Single crowns · six copies per row</option></select></label>
+              {[0, 1].map(i => <label key={i}>Surface {i + 1}<input aria-label={`Surface ${i + 1} file`} type="file" accept=".ply,.stl" disabled={locked} onChange={event => setFiles(current => { const next: [File | null, File | null] = [...current]; next[i] = event.target.files?.[0] ?? null; return next; })} /></label>)}<button className="wear-secondary full" onClick={() => load(false)} disabled={locked || !files[0] || !files[1]}>Load selected pair</button><p className="wear-note">Closed triangle PLY or STL. Files are processed in your browser and are not uploaded. Higher Y centre is assigned upper; use Swap if needed.</p></div></details>
           </section>
 
           <section className="wear-section">
@@ -425,24 +605,47 @@ export function WearApp() {
             {isCycles ? <p className="wear-note">Experimental pressure-and-sliding model; improved facet realism has not been validated. The whole upper row opens about the hinge and returns to the shared closed pose on every cycle.</p>
               : <p className="wear-note">Default workflow: close the rows along Y and wear both teeth where they meet. Optional vegetation abrasion can run alongside contact wear.</p>}
             <fieldset className="wear-pose" disabled={poseLocked}>
-              <legend>Upper-row setup pose</legend>
+              <legend>{selectedRow === "upper" ? "Upper" : "Lower"} {eachCrownTarget && crownRows ? "crown tilt · linked across all six" : "whole-row setup pose"}</legend>
               <p className="wear-note">Choose <strong>Move</strong> or <strong>Rotate</strong> above the model, then drag its colored arrows or rings. Drag away from the handles to orbit the view.</p>
-              <dl className="wear-pose-readout"><div><dt>Position · {unit}</dt><dd>{upperPose.translation.map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div><div><dt>Rotation · °</dt><dd>{upperPose.rotation.map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>
-              <button className="wear-text-button" disabled={!upperPose.translation.some(v => v !== 0) && !upperPose.rotation.some(v => v !== 0)} onClick={() => changeUpperPose(identityUpperSetupPose())}><RotateCcw size={12} /> Restore source pose</button>
-              <details className="wear-import"><summary>Restore setup pose from run JSON</summary><div><label>Run settings JSON<input aria-label="Restore setup pose from run JSON" type="file" accept=".json,application/json" disabled={poseLocked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreUpperPose(file); }} /></label><p className="wear-note">Restores the upper-row position and rotation only. Load the original toothrows first. Worn material and other run settings are not restored.</p></div></details>
+              {!eachCrownTarget && <dl className="wear-pose-readout"><div><dt>Position · {unit}</dt><dd>{selectedPose.translation.map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>}
+              {crownRows && <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />}
+              <details className="wear-angle-details" open={crownRows ? undefined : true}><summary>Source rotations · X / Y / Z</summary>
+                <dl className="wear-pose-readout"><div><dt>{eachCrownTarget ? "Each crown" : "Whole row"} · °</dt><dd>{(eachCrownTarget ? crownRotations[selectedRowIndex] : selectedPose.rotation).map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>
+                <p className="wear-note">Euler rotations from the original mesh orientation, applied X then Y then Z. These are rotation commands, not angles to the occlusal plane.</p>
+              </details>
+              {eachCrownTarget && crownRows
+                ? <button className="wear-text-button" disabled={!crownRotations[selectedRowIndex].some(v => v !== 0)} onClick={() => changeCrownRotation(selectedRow, [0, 0, 0])}><RotateCcw size={12} /> Restore crown tilt</button>
+                : <button className="wear-text-button" disabled={!selectedPose.translation.some(v => v !== 0) && !selectedPose.rotation.some(v => v !== 0)} onClick={() => changeRowPose(selectedRow, identityUpperSetupPose())}><RotateCcw size={12} /> Restore source pose</button>}
+              <details className="wear-import"><summary>Restore setup pose from run JSON</summary><div><label>Run settings JSON<input aria-label="Restore setup pose from run JSON" type="file" accept=".json,application/json" disabled={poseLocked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreSetup(file); }} /></label><p className="wear-note">Restores both row poses and linked crown tilts. Load the same original files and row type first. Worn material and other run settings are not restored.</p></div></details>
             </fieldset>
-            <p className="wear-note">Preview changes live, then prepare the grid. The gizmo uses world axes and rotates about the upper row’s center.</p>
+            <p className="wear-note">Preview changes live, then prepare the grid. Whole-row controls move the base and all teeth together about the row center. Crown controls rotate each tooth about its own center using row-local axes.</p>
+            {crownRows && <div className="wear-crown-spacing">
+              <NumberField label="Tooth spacing" value={crownPitch} min={0.001} max={1e6} step="any" suffix={unit} disabled={poseLocked} onChange={changeCrownPitch} />
+              <p className="wear-note">Center-to-center distance along each row. Both rows use the same spacing and retain their half-tooth stagger; bases expand with the rows.</p>
+              <div role="status" aria-live="polite" className={currentCrownCheck?.clear ? "wear-prepared" : "wear-warning"}>
+                {!validCrownPitch ? "Enter positive tooth spacing within the supported range." : crownCheckError || (!currentCrownCheck ? "Checking individual crowns…" : currentCrownCheck.clear ? "Crown clearance verified in both rows." : currentCrownCheck.rows.some(row => row.status === "intersecting") ? "Neighboring crowns intersect. Increase tooth spacing before preparing." : "No sampled intersection, but clearance is not yet verified. Increase tooth spacing before preparing.")}
+              </div>
+              {currentCrownCheck && !currentCrownCheck.clear && <>
+                <p className="wear-note">{currentCrownCheck.rows.filter(row => row.intersectingPairs > 0).map(row => `${row.row === "upper" ? "Upper" : "Lower"}: ${row.intersectingPairs} intersecting pairs`).join(" · ")}</p>
+                <button className="wear-secondary full" disabled={poseLocked} onClick={() => changeCrownPitch(Math.ceil(currentCrownCheck.suggestedPitch * 1000) / 1000)}>Space teeth to clear · {format(Math.ceil(currentCrownCheck.suggestedPitch * 1000) / 1000, 3)} {unit}</button>
+              </>}
+              <p className="wear-note">Checks include the complete crowns, excluding the shared support base. Automatic spacing uses a conservative clearance margin; it may leave a little extra space. Rechecked after each tooth tilt or spacing change.</p>
+            </div>}
             {setupStarted && <p className="wear-warning wear-pose-warning">Reset to unworn geometry to adjust the setup pose{isCycles ? " or hinge" : ""}.</p>}
-            {!validUpperPose && <p className="wear-warning wear-pose-warning">Use finite pose values and translations within the supported coordinate range.</p>}
+            {!validSetup && <p className="wear-warning wear-pose-warning">Use finite pose values and translations within the supported coordinate range.</p>}
             <div className="wear-field-pair"><NumberField label="Column pitch" value={spacing} min={0.001} step="any" suffix={unit} disabled={locked} onChange={v => { setSpacing(v); setDirty(true); }} /><label className="wear-field"><span>Unit label</span><select value={unit} disabled={locked} onChange={e => setUnit(e.target.value)}><option value="u">Native units</option><option value="mm">Millimetres</option><option value="cm">Centimetres</option></select></label></div>
             <p className="wear-note">Smaller pitch retains finer detail. Y surfaces stay continuous. Unit labels do not rescale your files.</p>
             {!isCycles && <>
               <NumberField label="Contact spread σ" value={contactSpread} min={0} max={maxContactSpread} step="any" suffix={unit} disabled={locked} onChange={value => { setContactSpread(value); setDirty(true); setStatus("Prepare the wear grid to apply the contact spread. This starts from unworn geometry."); }} />
-              <p className="wear-note">0 keeps exact cell contact. Try {format(spacing / 2, 4)} {unit} (half a pitch) for a finite Gaussian contact footprint. Direct overlap is still resolved. This controls geometry, not pressure. Maximum {format(maxContactSpread, 4)} {unit} keeps it fast. Prepare again after changing it.</p>
-              {!validContactSpread && <p className="wear-warning">Enter a finite contact spread from 0 to two-thirds of the column pitch ({format(maxContactSpread, 4)} {unit}).</p>}
+              <p className="wear-note">0 keeps exact cell contact. σ sets the footprint in model units, reaching 3σ sideways. Try {format(spacing, 3)}–{format(2 * spacing, 3)} {unit} for broader contact. Direct overlap is still resolved. Wider footprints cost more; radius is limited to 16 grid cells. Prepare again after changing it.</p>
+              {!validContactSpread && <p className="wear-warning">Enter a finite spread from 0 to {format(maxContactSpread, 4)} {unit}.</p>}
+              <NumberField label="Thin-wall chipping" value={chipThickness} min={0} max={spacing * 8} step="any" suffix={unit} disabled={locked || vegetationEnabled} onChange={value => { setChipThickness(value); setDirty(true); }} />
+              <p className="wear-note">0 disables chipping. Otherwise, narrow caps below this width can break back to nearby contact-wear depth. Use more than one grid pitch to resolve it. A geometric approximation, not a fracture model; vegetation must be off.</p>
+              {!validChipping && <p className="wear-warning">Use a thickness from 0 to eight pitches with vegetation off.</p>}
+              {(snapshot?.chipThickness ?? 0) > 0 && <p className="wear-note">Chipped volume: upper {format(snapshot?.chippedUpperVolume ?? 0)} · lower {format(snapshot?.chippedLowerVolume ?? 0)} {unit}³. Included in total removal; separate from contact wear.</p>}
             </>}
             <label className="wear-check"><input type="checkbox" checked={autoOpen} disabled={locked} onChange={e => { setAutoOpen(e.target.checked); setDirty(true); }} /> Automatically clear initial overlap along Y</label>
-            <button className="wear-secondary full" disabled={!original || locked || !validUpperPose || !validContactSpread || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare()}><Layers3 size={15} />{surfaces && !dirty ? "Rebuild wear grid" : "Prepare wear grid"}</button>
+            <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !validChipping || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare()}><Layers3 size={15} />{surfaces && !dirty ? "Rebuild wear grid" : "Prepare wear grid"}</button>
             {snapshot && <div className="wear-prepared"><Check size={13} /><span>{isCycles ? "Closed reference offset" : gaussianPrepared ? "Initial direct contact at" : "Initial first contact at"} <strong>{format(isCycles ? closure : first, 3)} {unit}</strong>{isCycles ? " along −Y" : " closure"}{snapshot.initialOpening > 0 ? ` · opened ${format(snapshot.initialOpening, 3)} ${unit} to clear overlap` : ""}</span></div>}
             <div className="wear-compute">
               <label className="wear-field"><span>Computation</span><select value={compute.preference} disabled={locked || traceLoading || compute.backend === "initializing"} onChange={e => changeCompute(e.target.value as ComputePreference)}><option value="auto">Automatic · GPU when available</option><option value="cpu">CPU reference</option></select></label>

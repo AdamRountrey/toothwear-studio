@@ -1,0 +1,90 @@
+{
+  "application": "Toothwear Studio",
+  "version": 12,
+  "id": "y13-s083",
+  "name": "Y13-S083 (13 degrees)",
+  "usageNotice": "Experimental - not for research use.",
+  "sources": [
+    "Camarasaurus_crown_hole_lower.stl",
+    "Camarasaurus_crown_hole_upper.stl"
+  ],
+  "setup": {
+    "upper": {
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotationDegrees": [
+        0,
+        0,
+        0
+      ]
+    },
+    "lower": {
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotationDegrees": [
+        0,
+        0,
+        0
+      ]
+    },
+    "crowns": {
+      "countPerRow": 6,
+      "pitch": 30.724,
+      "spacingCheck": {
+        "pitch": 30.724,
+        "clear": true,
+        "suggestedPitch": 30.724,
+        "rows": [
+          {
+            "row": "upper",
+            "status": "clear",
+            "pairOverlapVolume": 0,
+            "intersectingPairs": 0,
+            "samplePitch": 0.21581636369228363,
+            "openColumns": 0,
+            "safePitch": 30.72350079536438
+          },
+          {
+            "row": "lower",
+            "status": "clear",
+            "pairOverlapVolume": 0,
+            "intersectingPairs": 0,
+            "samplePitch": 0.21581637114286423,
+            "openColumns": 0,
+            "safePitch": 30.72349818229675
+          }
+        ]
+      },
+      "rotationsDegrees": [
+        [
+          20,
+          3.054941840818941,
+          25
+        ],
+        [
+          -20,
+          3.054941840818941,
+          -25
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "mode": "geometric",
+    "spacing": 0.25,
+    "contactSpread": 0.75,
+    "chipThickness": 1.5,
+    "upperWearShare": 0.5,
+    "autoOpen": true,
+    "vegetation": false,
+    "increment": 0.25,
+    "stopMode": "total",
+    "stopDistance": 16.69232592895942
+  }
+}

@@ -28,9 +28,11 @@ import {
   PCFSoftShadowMap,
   PerspectiveCamera,
   Quaternion,
+  Raycaster,
   Scene,
   SphereGeometry,
   Vector3,
+  Vector2,
   WebGLRenderer,
 } from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -52,6 +54,15 @@ export type WearMesh = {
 
 export type WearView = "perspective" | "front" | "side" | "top";
 export type WearShading = "relief" | "studio";
+export type CrownArrayPreview = {
+  crown: WearMesh;
+  /** Local row-space transforms; no crown vertex buffers are copied while dragging. */
+  transforms: Matrix4[];
+  pivots: [number, number, number][];
+  base?: WearMesh;
+};
+type ToothRow = "upper" | "lower";
+type GizmoTarget = ToothRow | "upper-crown" | "lower-crown" | "hinge";
 
 export type WearViewportProps = {
   upper: WearMesh | null;
@@ -64,6 +75,17 @@ export type WearViewportProps = {
   upperPoseMode?: "translate" | "rotate" | null;
   upperPoseEditable?: boolean;
   onUpperPoseChange?: (pose: UpperSetupPose) => void;
+  lowerPose?: UpperSetupPose;
+  lowerPivot?: [number, number, number];
+  lowerPoseBaked?: boolean;
+  lowerPoseMode?: "translate" | "rotate" | null;
+  lowerPoseEditable?: boolean;
+  onLowerPoseChange?: (pose: UpperSetupPose) => void;
+  crownArrays?: { upper: CrownArrayPreview; lower: CrownArrayPreview };
+  /** Rotate one representative crown about its own pivot, in its row's local frame. */
+  crownEdit?: { row: ToothRow; index: number; rotation: [number, number, number] };
+  onCrownSelect?: (row: ToothRow, index: number) => void;
+  onCrownRotationChange?: (row: ToothRow, rotation: [number, number, number]) => void;
   hinge?: { origin: [number, number, number]; axis: [number, number, number]; visible: boolean };
   hingeMode?: "translate" | "rotate" | null;
   hingeEditable?: boolean;
@@ -92,16 +114,17 @@ export type WearViewportProps = {
   vegetationXray?: boolean;
 };
 
-type SurfaceName = "upper" | "lower" | "originalUpper" | "originalLower";
+type SurfaceName = "upper" | "lower" | "originalUpper" | "originalLower" | "upperBase" | "lowerBase" | "originalUpperBase" | "originalLowerBase";
 type Surface = {
   source: WearMesh;
   mesh: Mesh<BufferGeometry, MeshStandardMaterial | MeshBasicMaterial>;
+  transforms?: Matrix4[];
 };
 type ViewportState = {
   scene: Scene;
   camera: PerspectiveCamera;
   controls: OrbitControls;
-  upperGizmo: { controls: TransformControls; pivot: Group; scene: Scene; pointerId: number | null; target: "upper" | "hinge" };
+  upperGizmo: { controls: TransformControls; pivot: Group; scene: Scene; pointerId: number | null; target: GizmoTarget };
   hingeGuide: { group: Group; arrows: ArrowHelper[]; center: Mesh<SphereGeometry, MeshBasicMaterial> };
   renderer: WebGLRenderer;
   grid: GridHelper;
@@ -126,7 +149,7 @@ type ViewportState = {
 
 const UPPER_COLOR = "#eddbb8";
 const LOWER_COLOR = "#65bfb9";
-const SURFACES: SurfaceName[] = ["upper", "lower", "originalUpper", "originalLower"];
+const SURFACES: SurfaceName[] = ["upper", "lower", "originalUpper", "originalLower", "upperBase", "lowerBase", "originalUpperBase", "originalLowerBase"];
 
 /** Ghosts should not cast artificial cavity shading over the remaining solid. */
 class WearAmbientOcclusion extends GTAOPass {
@@ -314,24 +337,61 @@ export function WearViewport(props: WearViewportProps) {
         invalidate();
         return;
       }
-      if (!current.upperPoseEditable || !current.upperPoseMode || !current.onUpperPoseChange) return;
-      const pivot = getUpperSourcePivot(state, current);
+      const row = state.upperGizmo.target.startsWith("lower") ? "lower" : "upper";
+      const editable = row === "upper" ? current.upperPoseEditable : current.lowerPoseEditable;
+      if (!editable) return;
+      if (state.upperGizmo.target.endsWith("-crown")) {
+        if (current.crownEdit?.row !== row || !current.onCrownRotationChange) return;
+        // The handle is in world space; the same local crown rotation is
+        // applied at each of the six fixed pivots, after undoing the row pose.
+        const rowQuaternion = getRowQuaternion(current, row);
+        const localQuaternion = rowQuaternion.invert().multiply(upperPivot.quaternion);
+        const rotation = new Euler().setFromQuaternion(localQuaternion, "ZYX");
+        current.onCrownRotationChange(row, [rotation.x, rotation.y, rotation.z].map(value => value * 180 / Math.PI) as [number, number, number]);
+        invalidate();
+        return;
+      }
+      const mode = row === "upper" ? current.upperPoseMode : current.lowerPoseMode;
+      const onChange = row === "upper" ? current.onUpperPoseChange : current.onLowerPoseChange;
+      if (!mode || !onChange) return;
+      const pivot = getRowSourcePivot(state, current, row);
       const rotation = new Euler().setFromQuaternion(upperPivot.quaternion, "ZYX");
-      current.onUpperPoseChange({
+      onChange({
         translation: [upperPivot.position.x - pivot[0], upperPivot.position.y - pivot[1], upperPivot.position.z - pivot[2]],
         rotation: [rotation.x * 180 / Math.PI, rotation.y * 180 / Math.PI, rotation.z * 180 / Math.PI],
       });
       invalidate();
     };
+    let pointerStart: { x: number; y: number; gizmo: boolean } | undefined;
+    const crownRaycaster = new Raycaster();
     const onGizmoDragging = (event: { value: unknown }) => {
       controls.enabled = !event.value;
+      if (event.value && pointerStart) pointerStart.gizmo = true;
       invalidate();
     };
     const rememberGizmoPointer = (event: PointerEvent) => {
+      pointerStart = event.button === 0 ? { x: event.clientX, y: event.clientY, gizmo: upperTransform.dragging } : undefined;
       if (upperTransform.dragging) state.upperGizmo.pointerId = event.pointerId;
     };
-    const releaseGizmoPointer = () => { state.upperGizmo.pointerId = null; };
-    const cancelGizmoDrag = () => { finishUpperPoseDrag(state); invalidate(); };
+    const releaseGizmoPointer = (event: PointerEvent) => {
+      state.upperGizmo.pointerId = null;
+      const start = pointerStart;
+      pointerStart = undefined;
+      const current = propsRef.current;
+      if (!start || start.gizmo || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4 || !current.onCrownSelect) return;
+      const candidates = (["upper", "lower"] as const).flatMap(row => {
+        const surface = state.surfaces[row];
+        const editable = row === "upper" ? current.upperPoseEditable : current.lowerPoseEditable;
+        const baked = row === "upper" ? current.upperPoseBaked : current.lowerPoseBaked;
+        return editable && !baked && surface?.mesh.visible && surface.mesh instanceof InstancedMesh ? [surface.mesh] : [];
+      });
+      if (!candidates.length) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      crownRaycaster.setFromCamera(new Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), camera);
+      const hit = crownRaycaster.intersectObjects(candidates, false)[0];
+      if (hit?.instanceId !== undefined) current.onCrownSelect(hit.object === state.surfaces.upper?.mesh ? "upper" : "lower", hit.instanceId);
+    };
+    const cancelGizmoDrag = () => { pointerStart = undefined; finishUpperPoseDrag(state); invalidate(); };
     upperTransform.addEventListener("change", invalidate);
     upperTransform.addEventListener("objectChange", onGizmoChange);
     upperTransform.addEventListener("dragging-changed", onGizmoDragging);
@@ -435,17 +495,14 @@ export function WearViewport(props: WearViewportProps) {
   useEffect(() => {
     const state = stateRef.current;
     if (!state) return;
-    replaceSurface(state, "upper", props.upper);
-    replaceSurface(state, "lower", props.lower);
-    replaceSurface(state, "originalUpper", props.originalUpper ?? null);
-    replaceSurface(state, "originalLower", props.originalLower ?? null);
+    syncSourceSurfaces(state, props);
     syncVisibilityAndPose(state, propsRef.current);
     syncUpperPoseGizmo(state, propsRef.current);
     syncHingeGuide(state, propsRef.current);
     syncVegetationGuide(state, propsRef.current);
     if (!state.fitted) frameCamera(state, propsRef.current.view, propsRef.current.hinge);
     state.dirty = true;
-  }, [props.upper, props.lower, props.originalUpper, props.originalLower]);
+  }, [props.upper, props.lower, props.originalUpper, props.originalLower, props.crownArrays, props.upperPoseBaked, props.lowerPoseBaked]);
 
   useEffect(() => {
     const state = stateRef.current;
@@ -455,14 +512,14 @@ export function WearViewport(props: WearViewportProps) {
     syncHingeGuide(state, props);
     syncVegetationGuide(state, props);
     state.dirty = true;
-  }, [props.upperOffsetY, props.originalUpperOffsetY, props.lowerOffsetY, props.upperPose, props.upperPivot, props.upperPoseBaked, props.showUpper, props.showLower, props.showOriginal, props.hinge, props.hingePreviewAngle]);
+  }, [props.upperOffsetY, props.originalUpperOffsetY, props.lowerOffsetY, props.upperPose, props.upperPivot, props.upperPoseBaked, props.lowerPose, props.lowerPivot, props.lowerPoseBaked, props.showUpper, props.showLower, props.showOriginal, props.hinge, props.hingePreviewAngle]);
 
   useEffect(() => {
     const state = stateRef.current;
     if (!state) return;
     syncUpperPoseGizmo(state, props);
     state.dirty = true;
-  }, [props.upperPoseMode, props.upperPoseEditable, props.hingeMode, props.hingeEditable]);
+  }, [props.upperPoseMode, props.upperPoseEditable, props.lowerPoseMode, props.lowerPoseEditable, props.crownEdit, props.hingeMode, props.hingeEditable]);
 
   useEffect(() => {
     const state = stateRef.current;
@@ -582,6 +639,7 @@ function releaseSurface(state: ViewportState, name: SurfaceName) {
   const surface = state.surfaces[name];
   if (!surface) return;
   surface.mesh.removeFromParent();
+  if (surface.mesh instanceof InstancedMesh) surface.mesh.dispose();
   surface.mesh.material.dispose();
   const cached = state.geometryCache.get(surface.source);
   if (cached && --cached.uses === 0) {
@@ -591,8 +649,35 @@ function releaseSurface(state: ViewportState, name: SurfaceName) {
   delete state.surfaces[name];
 }
 
-function replaceSurface(state: ViewportState, name: SurfaceName, source: WearMesh | null) {
-  if (state.surfaces[name]?.source === source) return;
+function syncSourceSurfaces(state: ViewportState, props: WearViewportProps) {
+  for (const row of ["upper", "lower"] as const) {
+    const array = props.crownArrays?.[row];
+    const baked = row === "upper" ? props.upperPoseBaked : props.lowerPoseBaked;
+    const original = row === "upper" ? "originalUpper" : "originalLower";
+    const base = row === "upper" ? "upperBase" : "lowerBase";
+    const originalBase = row === "upper" ? "originalUpperBase" : "originalLowerBase";
+    replaceSurface(state, row, array && !baked ? array.crown : props[row], array && !baked ? array.transforms : undefined);
+    replaceSurface(state, original, array?.crown ?? props[original] ?? null, array?.transforms);
+    replaceSurface(state, base, array && !baked ? array.base ?? null : null);
+    replaceSurface(state, originalBase, array?.base ?? null);
+  }
+}
+
+function updateInstanceTransforms(surface: Surface, transforms: Matrix4[] | undefined) {
+  if (!(surface.mesh instanceof InstancedMesh) || !transforms || surface.transforms === transforms) return;
+  transforms.forEach((matrix, index) => surface.mesh instanceof InstancedMesh && surface.mesh.setMatrixAt(index, matrix));
+  surface.mesh.instanceMatrix.needsUpdate = true;
+  surface.mesh.computeBoundingBox();
+  surface.mesh.computeBoundingSphere();
+  surface.transforms = transforms;
+}
+
+function replaceSurface(state: ViewportState, name: SurfaceName, source: WearMesh | null, transforms?: Matrix4[]) {
+  const existing = state.surfaces[name];
+  if (existing?.source === source && (existing.mesh instanceof InstancedMesh) === !!transforms && (!(existing.mesh instanceof InstancedMesh) || existing.mesh.count === transforms!.length)) {
+    updateInstanceTransforms(existing, transforms);
+    return;
+  }
   releaseSurface(state, name);
   if (!source || source.positions.length < 9) return;
   let cached = state.geometryCache.get(source);
@@ -620,8 +705,19 @@ function replaceSurface(state: ViewportState, name: SurfaceName, source: WearMes
   const color = name.toLowerCase().includes("upper") ? UPPER_COLOR : LOWER_COLOR;
   const material = original
     ? new MeshBasicMaterial({ color, transparent: true, opacity: 0.12, depthWrite: false, side: DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
-    : new MeshStandardMaterial({ color: cached.geometry.hasAttribute("color") ? "#ffffff" : color, vertexColors: cached.geometry.hasAttribute("color"), roughness: 0.66, metalness: 0.025, flatShading: true, side: DoubleSide });
-  const mesh = new Mesh(cached.geometry, material);
+    : new MeshStandardMaterial({ color: cached.geometry.hasAttribute("color") ? "#ffffff" : color, vertexColors: cached.geometry.hasAttribute("color"), roughness: 0.66, metalness: 0.025, flatShading: !transforms, side: DoubleSide });
+  const mesh = transforms ? new InstancedMesh(cached.geometry, material, transforms.length) : new Mesh(cached.geometry, material);
+  // Dense source STL crowns use their welded vertex normals. Match that in
+  // GTAO's shared normal override, while keeping bases and sampled wear faces
+  // flat. Three caches the two normal-shader variants across these draws.
+  mesh.onBeforeRender = (_renderer, _scene, _camera, _geometry, renderMaterial) => {
+    const normalMaterial = state.ao.normalMaterial;
+    const flatShading = !transforms;
+    if (renderMaterial === normalMaterial && normalMaterial.flatShading !== flatShading) {
+      normalMaterial.flatShading = flatShading;
+      normalMaterial.needsUpdate = true;
+    }
+  };
   // Closed solids cast from their back faces, avoiding self-shadow speckling.
   if (!original) material.shadowSide = BackSide;
   mesh.name = `wear-${name}`;
@@ -630,13 +726,31 @@ function replaceSurface(state: ViewportState, name: SurfaceName, source: WearMes
   mesh.receiveShadow = !original;
   mesh.renderOrder = original ? 1 : 0;
   state.scene.add(mesh);
-  state.surfaces[name] = { source, mesh };
+  const surface = { source, mesh };
+  state.surfaces[name] = surface;
+  updateInstanceTransforms(surface, transforms);
 }
 
-function getUpperSourcePivot(state: ViewportState, props: WearViewportProps): [number, number, number] {
-  const sourceUpper = state.surfaces.originalUpper ?? state.surfaces.upper;
-  const sourceCenter = sourceUpper?.mesh.geometry.boundingBox?.getCenter(new Vector3());
-  return props.upperPivot ?? (sourceCenter?.toArray() as [number, number, number] | undefined) ?? [0, 0, 0];
+function localSurfaceBounds(surface: Surface): Box3 | null {
+  return surface.mesh instanceof InstancedMesh ? surface.mesh.boundingBox : surface.mesh.geometry.boundingBox;
+}
+
+function getRowSourcePivot(state: ViewportState, props: WearViewportProps, row: ToothRow): [number, number, number] {
+  const supplied = row === "upper" ? props.upperPivot : props.lowerPivot;
+  if (supplied) return supplied;
+  const source = state.surfaces[row === "upper" ? "originalUpper" : "originalLower"] ?? state.surfaces[row];
+  return source ? localSurfaceBounds(source)?.getCenter(new Vector3()).toArray() ?? [0, 0, 0] : [0, 0, 0];
+}
+
+function getRowQuaternion(props: WearViewportProps, row: ToothRow): Quaternion {
+  const pose = row === "upper" ? props.upperPose : props.lowerPose;
+  const [rx, ry, rz] = pose?.rotation.map(angle => angle % 360 * Math.PI / 180) ?? [0, 0, 0];
+  return new Quaternion().setFromEuler(new Euler(rx, ry, rz, "ZYX"));
+}
+
+function getRowSetupMatrix(state: ViewportState, props: WearViewportProps, row: ToothRow): Matrix4 {
+  const pose = row === "upper" ? props.upperPose : props.lowerPose;
+  return pose ? createUpperSetupMatrix(pose, getRowSourcePivot(state, props, row)) : new Matrix4();
 }
 
 function finishUpperPoseDrag(state: ViewportState) {
@@ -650,10 +764,29 @@ function finishUpperPoseDrag(state: ViewportState) {
 
 function syncUpperPoseGizmo(state: ViewportState, props: WearViewportProps) {
   const gizmo = state.upperGizmo;
+  for (const row of ["upper", "lower"] as const) {
+    const mesh = state.surfaces[row]?.mesh;
+    if (!(mesh instanceof InstancedMesh)) continue;
+    const selected = props.crownEdit?.row === row ? props.crownEdit.index : -1;
+    if (mesh.userData.selectedCrown === selected) continue;
+    const hadColor = !!mesh.instanceColor;
+    const white = new Color("#ffffff"), selectedColor = new Color("#ffd382");
+    for (let index = 0; index < mesh.count; index++) mesh.setColorAt(index, index === selected ? selectedColor : white);
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    if (!hadColor) mesh.material.needsUpdate = true;
+    mesh.userData.selectedCrown = selected;
+  }
   const hinge = !!props.hinge?.visible && !!props.hingeEditable && !!props.hingeMode && !!props.onHingeChange;
-  const active = !!state.surfaces.upper && (hinge || !!props.upperPoseEditable && !!props.upperPoseMode && !!props.onUpperPoseChange && props.showUpper);
-  const target = hinge ? "hinge" : "upper";
-  const mode = hinge ? props.hingeMode : props.upperPoseMode;
+  const crown = props.crownEdit;
+  const crownRow = crown?.row ?? "upper";
+  const crownPivot = crown && props.crownArrays?.[crownRow].pivots[crown.index];
+  const crownActive = !!crownPivot && !!props.onCrownRotationChange &&
+    (crownRow === "upper" ? !!props.upperPoseEditable && !props.upperPoseBaked && props.showUpper : !!props.lowerPoseEditable && !props.lowerPoseBaked && props.showLower);
+  const lowerActive = !!state.surfaces.lower && !!props.lowerPoseEditable && !!props.lowerPoseMode && !!props.onLowerPoseChange && props.showLower;
+  const upperActive = !!state.surfaces.upper && !!props.upperPoseEditable && !!props.upperPoseMode && !!props.onUpperPoseChange && props.showUpper;
+  const target: GizmoTarget = hinge ? "hinge" : crownActive ? `${crownRow}-crown` : lowerActive ? "lower" : "upper";
+  const active = hinge && !!state.surfaces.upper || crownActive || lowerActive || upperActive;
+  const mode = hinge ? props.hingeMode : crownActive ? "rotate" : lowerActive ? props.lowerPoseMode : props.upperPoseMode;
   if (!active) {
     finishUpperPoseDrag(state);
     gizmo.controls.enabled = false;
@@ -665,18 +798,26 @@ function syncUpperPoseGizmo(state: ViewportState, props: WearViewportProps) {
     gizmo.controls.setMode(mode!);
     gizmo.target = target;
   }
+  gizmo.controls.setSpace(target.endsWith("-crown") ? "local" : "world");
   // React receives every objectChange. Never feed that pose back into the
   // active drag: doing so changes the drag origin and can jump Euler angles.
   if (!gizmo.controls.dragging) {
     if (hinge) {
       gizmo.pivot.position.fromArray(props.hinge!.origin);
       gizmo.pivot.quaternion.setFromUnitVectors(new Vector3(1, 0, 0), new Vector3(...props.hinge!.axis).normalize());
+    } else if (crownActive && crown) {
+      gizmo.pivot.position.fromArray(crownPivot!).applyMatrix4(getRowSetupMatrix(state, props, crownRow));
+      // In setup mode offsets are normally zero, but keep the handle aligned
+      // with the visible crown if a caller displays a translated source.
+      gizmo.pivot.position.y += crownRow === "upper" ? props.upperOffsetY : props.lowerOffsetY ?? 0;
+      const [rx, ry, rz] = crown.rotation.map(angle => angle % 360 * Math.PI / 180);
+      gizmo.pivot.quaternion.copy(getRowQuaternion(props, crownRow)).multiply(new Quaternion().setFromEuler(new Euler(rx, ry, rz, "ZYX")));
     } else {
-      const pivot = getUpperSourcePivot(state, props);
-      const pose = props.upperPose;
+      const row = lowerActive ? "lower" : "upper";
+      const pivot = getRowSourcePivot(state, props, row);
+      const pose = row === "upper" ? props.upperPose : props.lowerPose;
       gizmo.pivot.position.set(pivot[0] + (pose?.translation[0] ?? 0), pivot[1] + (pose?.translation[1] ?? 0), pivot[2] + (pose?.translation[2] ?? 0));
-      const [rx, ry, rz] = pose?.rotation.map(angle => angle % 360 * Math.PI / 180) ?? [0, 0, 0];
-      gizmo.pivot.quaternion.setFromEuler(new Euler(rx, ry, rz, "ZYX"));
+      gizmo.pivot.quaternion.copy(getRowQuaternion(props, row));
     }
     gizmo.pivot.updateMatrixWorld(true);
   }
@@ -685,8 +826,8 @@ function syncUpperPoseGizmo(state: ViewportState, props: WearViewportProps) {
 }
 
 function syncVisibilityAndPose(state: ViewportState, props: WearViewportProps) {
-  const pivot = getUpperSourcePivot(state, props);
-  const setupMatrix = props.upperPose ? createUpperSetupMatrix(props.upperPose, pivot) : new Matrix4();
+  const upperSetupMatrix = getRowSetupMatrix(state, props, "upper");
+  const lowerSetupMatrix = getRowSetupMatrix(state, props, "lower");
   const previewMatrix = new Matrix4();
   if (props.hinge && props.hingePreviewAngle && Number.isFinite(props.hingePreviewAngle)) {
     const origin = new Vector3(...props.hinge.origin);
@@ -706,7 +847,7 @@ function syncVisibilityAndPose(state: ViewportState, props: WearViewportProps) {
     // and automatic opening always move along world Y, after setup rotation.
     const mesh = surface.mesh;
     mesh.matrixAutoUpdate = false;
-    if (upper && (original || !props.upperPoseBaked)) mesh.matrix.copy(setupMatrix);
+    if (original || !(upper ? props.upperPoseBaked : props.lowerPoseBaked)) mesh.matrix.copy(upper ? upperSetupMatrix : lowerSetupMatrix);
     else mesh.matrix.identity();
     mesh.matrix.elements[13] += offsetY;
     if (upper) mesh.matrix.premultiply(previewMatrix);
@@ -766,7 +907,10 @@ function syncVegetationGuide(state: ViewportState, props: WearViewportProps) {
   for (const name of ["upper", "lower"] as const) {
     const originalName = name === "upper" ? "originalUpper" : "originalLower";
     const surface = state.surfaces[originalName] ?? state.surfaces[name];
-    if (surface?.mesh.geometry.boundingBox) bounds.union(surface.mesh.geometry.boundingBox.clone().applyMatrix4(surface.mesh.matrixWorld));
+    const localBounds = surface && localSurfaceBounds(surface);
+    if (surface && localBounds) bounds.union(localBounds.clone().applyMatrix4(surface.mesh.matrixWorld));
+    const base = state.surfaces[name === "upper" ? "originalUpperBase" : "originalLowerBase"] ?? state.surfaces[name === "upper" ? "upperBase" : "lowerBase"];
+    if (base?.mesh.geometry.boundingBox) bounds.union(base.mesh.geometry.boundingBox.clone().applyMatrix4(base.mesh.matrixWorld));
   }
   if (bounds.isEmpty()) { guide.group.visible = false; return; }
   const size = bounds.getSize(new Vector3());
@@ -813,7 +957,7 @@ function frameCamera(state: ViewportState, view: WearView, hinge?: WearViewportP
   for (const name of SURFACES) {
     const surface = state.surfaces[name];
     if (!surface || (name.startsWith("original") && !surface.mesh.visible)) continue;
-    const localBounds = surface.mesh.geometry.boundingBox;
+    const localBounds = localSurfaceBounds(surface);
     if (localBounds) bounds.union(localBounds.clone().applyMatrix4(surface.mesh.matrixWorld));
   }
   if (bounds.isEmpty()) return;

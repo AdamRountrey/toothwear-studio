@@ -1,0 +1,181 @@
+{
+  "application": "Toothwear Studio",
+  "version": 12,
+  "id": "s128",
+  "name": "S128",
+  "usageNotice": "Experimental — not for research use.",
+  "sources": [
+    "Camarasaurus_crown_hole_lower.stl",
+    "Camarasaurus_crown_hole_upper.stl"
+  ],
+  "setup": {
+    "upper": {
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotationDegrees": [
+        0,
+        0,
+        0
+      ],
+      "pivot": [
+        14.520999488830569,
+        55.811413583755495,
+        -2.371091842651367
+      ],
+      "rotationOrder": "world X, then Y, then Z about the source bounding-box center; translation applied afterward"
+    },
+    "lower": {
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotationDegrees": [
+        0,
+        0,
+        0
+      ],
+      "pivot": [
+        -0.5389976501464844,
+        -0.10801392555236689,
+        -2.3710927963256836
+      ],
+      "rotationOrder": "world X, then Y, then Z about the source bounding-box center; translation applied afterward"
+    },
+    "crowns": {
+      "countPerRow": 6,
+      "pitch": 30.12,
+      "spacingCheck": {
+        "pitch": 30.12,
+        "clear": true,
+        "suggestedPitch": 30.12,
+        "rows": [
+          {
+            "row": "upper",
+            "status": "clear",
+            "pairOverlapVolume": 0,
+            "intersectingPairs": 0,
+            "samplePitch": 0.20274163782596588,
+            "openColumns": 0,
+            "safePitch": 30.11908456802368
+          },
+          {
+            "row": "lower",
+            "status": "clear",
+            "pairOverlapVolume": 0,
+            "intersectingPairs": 0,
+            "samplePitch": 0.20274163037538528,
+            "openColumns": 0,
+            "safePitch": 30.11908169746399
+          }
+        ]
+      },
+      "rotationsDegrees": [
+        [
+          30,
+          -5.199919185152027,
+          25
+        ],
+        [
+          -30,
+          -5.199919185152027,
+          -25
+        ]
+      ],
+      "centers": [
+        [
+          [
+            -60.779000511169436,
+            52.724294662475586,
+            -2.371091842651367
+          ],
+          [
+            -30.659000511169435,
+            52.724294662475586,
+            -2.371091842651367
+          ],
+          [
+            -0.5390005111694336,
+            52.724294662475586,
+            -2.371091842651367
+          ],
+          [
+            29.580999488830567,
+            52.724294662475586,
+            -2.371091842651367
+          ],
+          [
+            59.70099948883057,
+            52.724294662475586,
+            -2.371091842651367
+          ],
+          [
+            89.82099948883058,
+            52.724294662475586,
+            -2.371091842651367
+          ]
+        ],
+        [
+          [
+            -75.8389976501465,
+            2.979104995727539,
+            -2.3710927963256836
+          ],
+          [
+            -45.71899765014649,
+            2.979104995727539,
+            -2.3710927963256836
+          ],
+          [
+            -15.598997650146485,
+            2.979104995727539,
+            -2.3710927963256836
+          ],
+          [
+            14.521002349853516,
+            2.979104995727539,
+            -2.3710927963256836
+          ],
+          [
+            44.64100234985352,
+            2.979104995727539,
+            -2.3710927963256836
+          ],
+          [
+            74.76100234985353,
+            2.979104995727539,
+            -2.3710927963256836
+          ]
+        ]
+      ],
+      "sourcePivots": [
+        [
+          -0.5390005111694336,
+          52.724294662475586,
+          -2.371091842651367
+        ],
+        [
+          -0.5389976501464844,
+          2.979104995727539,
+          -2.3710927963256836
+        ]
+      ],
+      "rotationOrder": "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose"
+    }
+  },
+  "settings": {
+    "mode": "geometric",
+    "spacing": 0.25,
+    "contactSpread": 0.75,
+    "chipThickness": 1.5,
+    "upperWearShare": 0.5,
+    "autoOpen": true,
+    "vegetation": false,
+    "increment": 0.25,
+    "stopMode": "total",
+    "stopDistance": 22.01032798157538
+  }
+}

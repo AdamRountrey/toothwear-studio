@@ -1,6 +1,7 @@
 import { collectSlidingVegetationContacts, validateVegetationTransportGrid, type VegetationContact } from "./slidingVegetation";
 import { applyVegetationSlabs, ensureWearPatches, extractPatchSurface, refreshTransportColumns, type WearPatch, type WearBox, type WearCutBox } from "./wearPatches";
 import { gaussianClosureBound, gaussianContactStep, hasGaussianNeighbors, hasGaussianOpposition, validateContactSpread } from "./gaussianContact";
+import { chipThinWalls, validateChipThickness } from "./thinWallChipping";
 
 /**
  * Geometric, quasistatic mutual wear along -Y. Each XZ sample contains all of its
@@ -25,6 +26,8 @@ export interface PrepareWearOptions {
   spacing: number;
   /** Gaussian footprint standard deviation in model units; zero is exact contact. */
   contactSpread?: number;
+  /** Optional narrow-cap breakage threshold; zero disables geometric chipping. */
+  chipThickness?: number;
   maxColumns?: number;
   autoOpen?: boolean;
   onProgress?: (fraction: number, stage: string) => void;
@@ -65,6 +68,9 @@ export interface Interval {
   initialMax: number;
   vegetationMin?: boolean;
   vegetationMax?: boolean;
+  /** Contact-only recession markers, distinct from optional chipped caps. */
+  contactMin?: number;
+  contactMax?: number;
 }
 
 export interface WearColumn {
@@ -80,6 +86,9 @@ export interface WearColumn {
 export interface WearState {
   grid: WearGrid;
   contactSpread?: number;
+  chipThickness?: number;
+  chippedUpperVolume?: number;
+  chippedLowerVolume?: number;
   closure: number;
   initialOpening: number;
   firstContactClosure: number;
@@ -140,6 +149,9 @@ export function getWearSolidBoxes(state: WearState, row: "upper" | "lower", cell
 
 export interface WearSnapshot {
   contactSpread?: number;
+  chipThickness?: number;
+  chippedUpperVolume?: number;
+  chippedLowerVolume?: number;
   closure: number;
   initialOpening: number;
   firstContactClosure: number;
@@ -209,7 +221,7 @@ function validateGeometry(geometry: WearGeometry, label: string): Bounds {
  * overlapping closed shells form a union; reversed nested shells form cavities.
  * Reversing an entire mesh does not change its solid. Unclosed rays are omitted.
  */
-function rasterize(
+export function sampleSolidColumns(
   geometry: WearGeometry,
   grid: WearGrid,
   epsilon: number,
@@ -304,9 +316,10 @@ export function prepareWear(
   lower: WearGeometry,
   options: PrepareWearOptions
 ): WearState {
-  const { spacing, contactSpread = 0, autoOpen = false, maxColumns = 300_000, onProgress } = options;
+  const { spacing, contactSpread = 0, chipThickness = 0, autoOpen = false, maxColumns = 300_000, onProgress } = options;
   if (!Number.isFinite(spacing) || spacing <= 0) throw new Error("Grid spacing must be a positive finite number.");
   validateContactSpread(spacing, contactSpread);
+  validateChipThickness(spacing, chipThickness);
   if (!Number.isSafeInteger(maxColumns) || maxColumns <= 0) throw new Error("Column limit must be a positive integer.");
   const upperBounds = validateGeometry(upper, "Upper row");
   const lowerBounds = validateGeometry(lower, "Lower row");
@@ -319,8 +332,8 @@ export function prepareWear(
   }
   const grid = { originX, originZ, spacing, nx, nz };
   const epsilon = spacing * 1e-8;
-  const upperRaster = rasterize(upper, grid, epsilon, fraction => onProgress?.(fraction * 0.45, "Sampling upper row"));
-  const lowerRaster = rasterize(lower, grid, epsilon, fraction => onProgress?.(0.45 + fraction * 0.45, "Sampling lower row"));
+  const upperRaster = sampleSolidColumns(upper, grid, epsilon, fraction => onProgress?.(fraction * 0.45, "Sampling upper row"));
+  const lowerRaster = sampleSolidColumns(lower, grid, epsilon, fraction => onProgress?.(0.45 + fraction * 0.45, "Sampling lower row"));
   const columns: WearColumn[] = new Array(nx * nz);
   let initialUpperVolume = 0, initialLowerVolume = 0;
   let sampledUpperColumns = 0, sampledLowerColumns = 0, opposingColumns = 0;
@@ -365,6 +378,7 @@ export function prepareWear(
   const state: WearState = {
     grid, columns, epsilon, closure: 0, initialOpening,
     ...(contactSpread > 0 ? { contactSpread } : {}),
+    ...(chipThickness > 0 ? { chipThickness } : {}),
     firstContactClosure: Math.max(0, minGap + initialOpening),
     recommendedVegetationCenterY,
     vegetation: { settings: null, pullDistance: 0, layers: 0, effectiveRecession: 0, pendingRecession: 0, removedUpperVolume: 0, removedLowerVolume: 0 },
@@ -433,6 +447,7 @@ export function advanceWearAsync(state: WearState, targetClosure: number, upperW
 }
 
 function* advanceWearSteps(state: WearState, targetClosure: number, upperWearShare: number, vegetation?: VegetationSettings): WearSteps {
+  validateChippingMode(state, vegetation !== undefined);
   if (!Number.isFinite(targetClosure) || targetClosure < state.closure) {
     throw new Error("Closure must be finite and cannot decrease. Reset the wear model to move backwards.");
   }
@@ -471,14 +486,16 @@ function validateGaussianClosureBatch(state: WearState, targetClosure: number): 
 /** Update solids only when a combined step will rebuild transport immediately afterward. */
 export function applyContactWear(state: WearState, targetClosure: number, upperWearShare: number): void {
   const spread = state.contactSpread ?? 0;
-  if (spread === 0) {
+  const chipping = (state.chipThickness ?? 0) > 0;
+  validateChippingMode(state);
+  if (spread === 0 && !chipping) {
     applyExactContactWear(state, targetClosure, upperWearShare);
     return;
   }
   validateContactSpread(state.grid.spacing, spread);
   if (!Number.isFinite(targetClosure) || targetClosure < state.closure || !Number.isFinite(upperWearShare) || upperWearShare < 0 || upperWearShare > 1)
     throw new Error("Use a finite nondecreasing closure and a wear share between zero and one.");
-  if (!hasGaussianNeighbors(state)) {
+  if (!hasGaussianNeighbors(state) && !chipping) {
     applyExactContactWear(state, targetClosure, upperWearShare);
     return;
   }
@@ -487,14 +504,24 @@ export function applyContactWear(state: WearState, targetClosure: number, upperW
   const step = state.grid.spacing;
   validateGaussianClosureBatch(state, targetClosure);
   while (state.closure < targetClosure) {
-    const before = state.closure, next = Math.min(targetClosure, before + step);
+    const before = state.closure;
+    // Fixed closure ticks make breakage independent of display frame rate.
+    const tick = (Math.floor(before / step + 1e-9) + 1) * step;
+    const next = Math.min(targetClosure, chipping ? tick : before + step);
     if (!(next > before)) break;
     const gaussianClosure = gaussianContactStep(state, next, upperWearShare);
     // A weighted dose cannot replace the exact nonpenetration constraint.
     applyExactContactWear(state, next, upperWearShare);
     if (gaussianClosure > state.closure) state.closure = gaussianClosureBound(state, gaussianClosure);
+    if (chipping && Math.abs(state.closure - tick) <= state.epsilon) chipThinWalls(state);
     if (!(state.closure > before) || state.closure < next) break;
   }
+}
+
+function validateChippingMode(state: WearState, vegetation = false): void {
+  validateChipThickness(state.grid.spacing, state.chipThickness ?? 0);
+  if ((state.chipThickness ?? 0) > 0 && (vegetation || state.patches))
+    throw new Error("Thin-wall chipping currently requires fast geometric contact with vegetation off. Prepare a fresh grid.");
 }
 
 /** Original event-based column solver, also used as the Gaussian residual guard. */
@@ -525,6 +552,10 @@ function applyExactContactWear(state: WearState, targetClosure: number, upperWea
       lower.max = contactClosure === lowerCapacity ? lower.min : Math.max(lower.min, lower.max - contactClosure * lowerWearShare);
       if (upper.min > previousUpper) upper.vegetationMin = false;
       if (lower.max < previousLower) lower.vegetationMax = false;
+      if ((state.chipThickness ?? 0) > 0) {
+        if (upper.min > previousUpper) upper.contactMin = upper.min;
+        if (lower.max < previousLower) lower.contactMax = lower.max;
+      }
       state.removedUpperVolume += (upper.min - previousUpper) * area;
       state.removedLowerVolume += (previousLower - lower.max) * area;
       closure += contactClosure;
@@ -735,12 +766,14 @@ function* advanceVegetationDoseSteps(state: WearState, distance: number, setting
 
 /** Pull at the current jaw pose with actual fractional face-normal recession. */
 export function pullVegetation(state: WearState, distance: number, settings: VegetationSettings): WearSnapshot {
+  validateChippingMode(state, true);
   validateVegetation(state, distance, settings);
   if (distance === 0) return getWearSnapshot(state);
   return resolveWearSteps(advanceVegetationDoseSteps(state, distance, settings, "held", 0.5));
 }
 
 export async function pullVegetationAsync(state: WearState, distance: number, settings: VegetationSettings, collect: VegetationContactCollector, material?: WearMaterialOperations): Promise<WearSnapshot> {
+  validateChippingMode(state, true);
   validateVegetation(state, distance, settings);
   if (distance === 0) return getWearSnapshot(state);
   return resolveWearStepsAsync(advanceVegetationDoseSteps(state, distance, settings, "held", 0.5), collect, material);
@@ -767,13 +800,16 @@ export function getWearSnapshot(state: WearState): WearSnapshot {
   }
   return {
     contactSpread: state.contactSpread ?? 0,
+    chipThickness: state.chipThickness ?? 0,
+    chippedUpperVolume: state.chippedUpperVolume ?? 0,
+    chippedLowerVolume: state.chippedLowerVolume ?? 0,
     closure: state.closure, initialOpening: state.initialOpening, firstContactClosure: state.firstContactClosure,
     recommendedVegetationCenterY: state.recommendedVegetationCenterY,
     vegetation: { ...state.vegetation, settings: state.vegetation.settings ? { ...state.vegetation.settings } : null },
     initialUpperVolume: state.initialUpperVolume, initialLowerVolume: state.initialLowerVolume,
     removedUpperVolume: state.removedUpperVolume, removedLowerVolume: state.removedLowerVolume,
-    contactRemovedUpperVolume: Math.max(0, state.removedUpperVolume - state.vegetation.removedUpperVolume),
-    contactRemovedLowerVolume: Math.max(0, state.removedLowerVolume - state.vegetation.removedLowerVolume),
+    contactRemovedUpperVolume: Math.max(0, state.removedUpperVolume - state.vegetation.removedUpperVolume - (state.chippedUpperVolume ?? 0)),
+    contactRemovedLowerVolume: Math.max(0, state.removedLowerVolume - state.vegetation.removedLowerVolume - (state.chippedLowerVolume ?? 0)),
     remainingUpperVolume: Math.max(0, state.initialUpperVolume - state.removedUpperVolume),
     remainingLowerVolume: Math.max(0, state.initialLowerVolume - state.removedLowerVolume),
     contactArea, contactColumns,

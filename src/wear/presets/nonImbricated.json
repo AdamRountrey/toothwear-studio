@@ -1,0 +1,118 @@
+{
+  "application": "Toothwear Studio",
+  "version": 12,
+  "id": "non-imbricated",
+  "name": "Non-imbricated crowns",
+  "usageNotice": "Experimental — not for research use.",
+  "sources": [
+    "Camarasaurus_crown_hole_lower.stl",
+    "Camarasaurus_crown_hole_upper.stl"
+  ],
+  "setup": {
+    "upper": {
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotationDegrees": [
+        0,
+        0,
+        0
+      ]
+    },
+    "lower": {
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotationDegrees": [
+        0,
+        0,
+        0
+      ]
+    },
+    "crowns": {
+      "countPerRow": 6,
+      "pitch": 30.12,
+      "rotationsDegrees": [
+        [
+          30,
+          14.245471110350081,
+          25
+        ],
+        [
+          -30,
+          14.245471110350081,
+          -25
+        ]
+      ],
+      "spacingCheck": {
+        "pitch": 30.12,
+        "clear": true,
+        "suggestedPitch": 30.12,
+        "rows": [
+          {
+            "row": "upper",
+            "status": "clear",
+            "pairOverlapVolume": 0,
+            "intersectingPairs": 0,
+            "samplePitch": 0.21322668343782425,
+            "openColumns": 0,
+            "safePitch": 28.671720991134645
+          },
+          {
+            "row": "lower",
+            "status": "clear",
+            "pairOverlapVolume": 0,
+            "intersectingPairs": 0,
+            "samplePitch": 0.21322669088840485,
+            "openColumns": 0,
+            "safePitch": 28.671718616485595
+          }
+        ]
+      }
+    }
+  },
+  "settings": {
+    "mode": "geometric",
+    "spacing": 0.25,
+    "contactSpread": 0.75,
+    "chipThickness": 1.5,
+    "upperWearShare": 0.5,
+    "autoOpen": true,
+    "vegetation": false,
+    "increment": 0.25,
+    "stopMode": "contact",
+    "stopDistance": 8
+  },
+  "experiment": {
+    "mode": "geometric",
+    "spacing": 0.25,
+    "contactSpread": 0.75,
+    "chipThickness": 1.5,
+    "upperWearShare": 0.5,
+    "autoOpen": true,
+    "vegetation": false,
+    "increment": 0.25,
+    "stopMode": "contact",
+    "stopDistance": 8,
+    "actualObliquity": [
+      {
+        "mean": -1.14271735705321e-15,
+        "min": -1.097481830634805,
+        "max": 1.2372490040012016
+      },
+      {
+        "mean": -1.14271735705321e-15,
+        "min": -1.097481830634805,
+        "max": 1.2372490040012016
+      }
+    ],
+    "firstContactClosure": 5.318027028995626,
+    "stopClosure": 13.318027028995626,
+    "comparison": "S128 crown X/Z tilts, half-pitch stagger and whole-row poses retained. Actual mean cutting-edge obliquity changed from 20 degrees to zero. Spacing increased only if needed for clearance. Baseline wear settings and eight units past first direct contact. This is not matched-volume comparison.",
+    "instructions": "Open /wear.html?preset=non-imbricated to load and prepare this run. Click Run wear to begin. Individual crowns remain independently centered. Setup importer alone restores poses and spacing only."
+  }
+}

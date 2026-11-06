@@ -59,7 +59,7 @@ it("worker preserves common closure and cycle mode through repeat, reset and clo
     if(worn.type!=="frame")throw new Error("Expected Gaussian wear");
     expect(worn.snapshot.removedUpperVolume).toBeGreaterThan(0);
     expect(worn.snapshot.removedUpperVolume).toBeCloseTo(worn.snapshot.removedLowerVolume,10);
-    expect((await dispatch({type:"prepare",spacing:.5,autoOpen:true,contactSpread:1})).type).toBe("error");
+    expect((await dispatch({type:"prepare",spacing:.5,autoOpen:true,contactSpread:3})).type).toBe("error");
     const gaussianReset=await dispatch({type:"reset"});
     if(gaussianReset.type!=="frame")throw new Error("Expected Gaussian reset");
     expect(gaussianReset.snapshot.contactSpread).toBe(.25);

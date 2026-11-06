@@ -19,8 +19,8 @@ const gridWorkspaces = new WeakMap<WearState, { upperDepth: Float64Array; lowerD
 
 export function validateContactSpread(spacing: number, sigma: number): void {
   if (!Number.isFinite(spacing) || spacing <= 0) throw new Error("Wear grid spacing must be positive and finite.");
-  if (!Number.isFinite(sigma) || sigma < 0 || sigma > spacing * (2 / 3) + spacing * 1e-12) {
-    throw new Error("Contact spread must be between zero and two-thirds of the wear grid spacing.");
+  if (!Number.isFinite(sigma) || sigma < 0 || sigma > spacing * (16 / 3) + spacing * 1e-12) {
+    throw new Error("Contact spread must be nonnegative, with a three-sigma radius no larger than 16 grid cells.");
   }
 }
 
@@ -31,9 +31,10 @@ function kernel(spacing: number, sigma: number): KernelEntry[] {
   // The center has unit unnormalized weight, but its response is supplied by
   // the existing exact contact solver instead of adding a second wear dose.
   let total = 1;
-  // The radial three-sigma cutoff fits in a fixed 5 by 5 cell neighborhood.
+  // A bounded dense footprint avoids holes from sparse sampling at large sigma.
+  const radius = Math.ceil(3 * ratio);
   const radiusSquared = 9 * ratio * ratio;
-  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+  for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) {
     const distanceSquared = dx * dx + dz * dz;
     if (distanceSquared === 0) continue;
     if (distanceSquared > radiusSquared * (1 + 1e-12)) continue;
@@ -67,11 +68,19 @@ function gaussianGridStep(state: WearState, targetClosure: number, upperWearShar
   upperDepth.fill(0); lowerDepth.fill(0);
   const { nx, nz, spacing } = state.grid;
   const startClosure = state.closure, lowerWearShare = 1 - upperWearShare;
+  let highestLower = -Infinity;
+  for (const column of columns) {
+    const lower = column.lower[column.lowerEnd];
+    if (lower && lower.max > lower.min) highestLower = Math.max(highestLower, lower.max);
+  }
   let reachedClosure = startClosure;
   for (let cell = 0; cell < count; cell++) {
     const column = columns[cell];
     const upper = column.upper[column.upperStart];
     if (!upper || !(upper.max > upper.min)) continue;
+    // Far caps (including bases) cannot receive a dose at this closure. Preserve
+    // the free-approach closure bound when all same-cell opposition is gone.
+    if (upper.min >= highestLower + targetClosure) continue;
     const upperCapacity = upperWearShare > 0 ? (upper.max - upper.min) / upperWearShare : Infinity;
     const x = cell % nx, z = Math.floor(cell / nx);
     for (let k = 0; k < entries.length; k++) {
@@ -100,18 +109,20 @@ function gaussianGridStep(state: WearState, targetClosure: number, upperWearShar
       const upper = column.upper[column.upperStart];
       const min = Math.min(upper.max, upper.min + upperDepth[cell]);
       state.removedUpperVolume += (min - upper.min) * area;
-      column.upper[column.upperStart] = { ...upper, min, vegetationMin: false };
+      column.upper[column.upperStart] = { ...upper, min, vegetationMin: false,
+        ...((state.chipThickness ?? 0) > 0 ? { contactMin: min } : {}) };
       if (min >= upper.max) column.upperStart++;
     }
     if (lowerDepth[cell] > 0) {
       const lower = column.lower[column.lowerEnd];
       const max = Math.max(lower.min, lower.max - lowerDepth[cell]);
       state.removedLowerVolume += (lower.max - max) * area;
-      column.lower[column.lowerEnd] = { ...lower, max, vegetationMax: false };
+      column.lower[column.lowerEnd] = { ...lower, max, vegetationMax: false,
+        ...((state.chipThickness ?? 0) > 0 ? { contactMax: max } : {}) };
       if (max <= lower.min) column.lowerEnd--;
     }
   }
-  return reachedClosure;
+  return highestLower === -Infinity ? reachedClosure : Math.max(reachedClosure, gaussianClosureBound(state, targetClosure));
 }
 
 function workspace(state: WearState): Workspace {

@@ -2,6 +2,8 @@ import type { WearGeometry, WearSnapshot, VegetationSettings } from "./engine";
 import type { VegetationTrace } from "./slidingVegetation";
 import type { UpperSetupPose } from "./upperPose";
 import type { BiteCycleMetrics, BiteCycleSettings } from "./biteCycles";
+import type { CrownRotations, CrownRowLayout } from "./crownRows";
+import type { CrownSpacingCheck } from "./crownSpacing";
 
 export type WearMode = "geometric" | "cycles";
 
@@ -27,9 +29,10 @@ export interface WearComputeStatus {
 export interface WearTimings { solveMs: number; meshMs: number; previewMs: number }
 export type WearRequest =
   | { type: "compute"; preference: ComputePreference }
-  | { type: "load"; sources: [MeshSource, MeshSource] }
+  | { type: "load"; sources: [MeshSource, MeshSource]; kind?: "crowns" | "rows" }
   | { type: "swap" }
-  | { type: "prepare"; spacing: number; autoOpen: boolean; contactSpread?: number; upperPose?: UpperSetupPose; mode?: WearMode }
+  | { type: "crown-check"; requestId: number; pitch: number; rotations: CrownRotations }
+  | { type: "prepare"; spacing: number; autoOpen: boolean; contactSpread?: number; chipThickness?: number; upperPose?: UpperSetupPose; lowerPose?: UpperSetupPose; crownRotations?: CrownRotations; crownPitch?: number; mode?: WearMode }
   | { type: "cycles"; settings: BiteCycleSettings; count: number }
   | { type: "advance"; target: number; share: number; vegetation?: VegetationSettings }
   | { type: "vegetation"; distance: number; settings: VegetationSettings }
@@ -40,9 +43,11 @@ export type WearRequest =
 
 export type WearResponse =
   | { type: "compute-status"; status: WearComputeStatus }
+  | { type: "crown-check"; requestId: number; result: CrownSpacingCheck }
+  | { type: "crown-check-error"; requestId: number; message: string }
   | { type: "progress"; fraction: number; message: string }
-  | { type: "loaded"; upper: WearGeometry; lower: WearGeometry; info: [SourceInfo, SourceInfo]; suggestedSpacing: number }
-  | { type: "frame"; upper: WearGeometry & { colors: Float32Array }; lower: WearGeometry & { colors: Float32Array }; snapshot: WearSnapshot; warnings: string[]; grid: { nx: number; nz: number; spacing: number }; preparation?: { autoOpen: boolean; upperPose: UpperSetupPose }; trace?: VegetationTrace; traceRequestId?: number; timings?: WearTimings; mode?: WearMode; cycle?: BiteCycleMetrics }
+  | { type: "loaded"; upper: WearGeometry; lower: WearGeometry; info: [SourceInfo, SourceInfo]; suggestedSpacing: number; crownRows?: [CrownRowLayout, CrownRowLayout] }
+  | { type: "frame"; upper: WearGeometry & { colors: Float32Array }; lower: WearGeometry & { colors: Float32Array }; snapshot: WearSnapshot; warnings: string[]; grid: { nx: number; nz: number; spacing: number }; preparation?: { autoOpen: boolean; upperPose: UpperSetupPose; lowerPose?: UpperSetupPose; crownRotations?: CrownRotations; crownPitch?: number }; trace?: VegetationTrace; traceRequestId?: number; timings?: WearTimings; mode?: WearMode; cycle?: BiteCycleMetrics }
   | { type: "trace"; requestId: number; trace: VegetationTrace; closure: number }
   | { type: "trace-error"; requestId: number; message: string }
   | { type: "exported"; row: "upper" | "lower"; buffer: ArrayBuffer }

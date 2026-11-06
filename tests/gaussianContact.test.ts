@@ -183,8 +183,8 @@ describe('bounded Gaussian geometric contact', () => {
 
   it('rejects invalid spreads and oversized batches before mutating a saved state', () => {
     const upper=box(0,4,6,8,0,5), lower=box(0,4,0,4,1,4);
-    for(const sigma of [-1,NaN,Infinity,.667]) expect(()=>prepareWear(upper,lower,{spacing:1,contactSpread:sigma})).toThrow(/Contact spread/);
-    for(const sigma of [-1,NaN,Infinity,.667]) {
+    for(const sigma of [-1,NaN,Infinity,5.334]) expect(()=>prepareWear(upper,lower,{spacing:1,contactSpread:sigma})).toThrow(/Contact spread/);
+    for(const sigma of [-1,NaN,Infinity,5.334]) {
       const state=prepareWear(upper,lower,{spacing:1,contactSpread:.5});
       pullVegetation(state,.2,vegetation);
       state.contactSpread=sigma;
@@ -197,5 +197,18 @@ describe('bounded Gaussian geometric contact', () => {
     const before=structuredClone(state);
     expect(()=>advanceWear(state,5000)).toThrow(/batch/);
     expect(state).toEqual(before);
+  });
+
+  it('extends a broad footprint beyond two cells without wearing across a vertical gap', () => {
+    const u = Array.from({length:8}, () => [] as number[][]);
+    const l = Array.from({length:8}, () => [] as number[][]);
+    u[0] = [[2,4]]; l[3] = [[0,2]]; l[4] = [[0,1]]; l[7] = [[0,2]];
+    const state = grid(u,l,1.5);
+    advanceWear(state,.5);
+    expect(state.columns[3].lower[0].max).toBeLessThan(2);
+    expect(state.columns[4].lower[0].max).toBe(1);
+    expect(state.columns[7].lower[0].max).toBe(2);
+    expect(state.removedUpperVolume).toBeCloseTo(state.removedLowerVolume,12);
+    expectValidSolids(state);
   });
 });
