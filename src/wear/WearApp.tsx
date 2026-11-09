@@ -13,6 +13,7 @@ import s128Preset from "./presets/s128.json";
 import y13S083Preset from "./presets/y13S083.json";
 import { crownRotationForAngles, estimateCrownReference, measureCrownInclination, type CrownAngleTarget } from "./crownOrientation";
 import { CrownAngles } from "./CrownAngles";
+import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
 
 type Row = "upper" | "lower";
 type Rotation = [number, number, number];
@@ -36,7 +37,7 @@ export function WearApp() {
   const manualPullPending = useRef(false);
   const initializeVegetationBand = useRef(true);
   const traceRequestId = useRef(0);
-  const settings = useRef<{ target: number; step: number; share: number; vegetation?: VegetationSettings; mode: "geometric" | "cycles"; cycleTarget: number; cycleSettings?: BiteCycleSettings }>({ target: 0, step: 0.25, share: 0.5, mode: "geometric", cycleTarget: 10 });
+  const settings = useRef<GeometricRunSettings & { mode: "geometric" | "cycles"; cycleTarget: number; cycleSettings?: BiteCycleSettings }>({ target: 0, step: 0.25, share: 0.5, mode: "geometric", cycleTarget: 10, jawMotion: "closing", pullTarget: 250, pullStep: 25 });
   const [original, setOriginal] = useState<[WearMesh, WearMesh] | null>(null);
   const [surfaces, setSurfaces] = useState<[WearMesh, WearMesh] | null>(null);
   const [info, setInfo] = useState<[SourceInfo, SourceInfo] | null>(null);
@@ -59,6 +60,9 @@ export function WearApp() {
   const [crownEditing, setCrownEditing] = useState(false);
   const [importKind, setImportKind] = useState<"rows" | "crowns">("rows");
   const [mode, setMode] = useState<"geometric" | "cycles">("geometric");
+  const [jawMotion, setJawMotion] = useState<JawMotion>("closing");
+  const [panel, setPanel] = useState<"run" | "setup" | "display">("run");
+  const rail = useRef<HTMLElement>(null);
   const [cycleSettings, setCycleSettings] = useState<BiteCycleSettings>(() => createDefaultBiteCycleSettings({ min: [-1, -1, -1], max: [1, 1, 1] }, 0.5));
   const [cycle, setCycle] = useState<BiteCycleMetrics | null>(null);
   const [cycleTarget, setCycleTarget] = useState(10);
@@ -131,6 +135,7 @@ export function WearApp() {
   const [abrasionRate, setAbrasionRate] = useState(0.02);
   const [pullPerClosure, setPullPerClosure] = useState(10);
   const [pullDistance, setPullDistance] = useState(25);
+  const [pullTarget, setPullTarget] = useState(250);
   const [showVegetation, setShowVegetation] = useState(true);
   const [showVegetationPaths, setShowVegetationPaths] = useState(true);
   const [showSlidingContacts, setShowSlidingContacts] = useState(true);
@@ -148,6 +153,9 @@ export function WearApp() {
   const target = depth + (stopMode === "contact" ? first : 0);
   const closure = snapshot?.closure ?? 0;
   const isCycles = mode === "cycles";
+  const fixedJaw = !isCycles && jawMotion === "fixed";
+  const cumulativePull = snapshot?.vegetation.pullDistance ?? 0;
+  const noMaterial = !!snapshot && snapshot.remainingUpperVolume <= 0 && snapshot.remainingLowerVolume <= 0;
   const maxContactSpread = Number.isFinite(spacing) && spacing > 0 ? spacing * 16 / 3 : 0;
   const validContactSpread = isCycles || Number.isFinite(contactSpread) && contactSpread >= 0 && contactSpread <= maxContactSpread;
   const validChipping = isCycles || Number.isFinite(chipThickness) && chipThickness >= 0 && chipThickness <= spacing * 8 && !(chipThickness > 0 && vegetationEnabled);
@@ -155,8 +163,12 @@ export function WearApp() {
   let cycleSettingsError = "";
   try { validateBiteCycleSettings(cycleSettings); } catch (cause) { cycleSettingsError = cause instanceof Error ? cause.message : "Check bite-cycle settings."; }
   const completedCycles = cycle?.completedCycles ?? 0;
-  const complete = !!snapshot && !dirty && (isCycles ? completedCycles >= cycleTarget : closure >= target - 1e-8 || snapshot.materialExhausted);
+  const runSettings: GeometricRunSettings = { jawMotion, target, step, share: share / 100,
+    vegetation: vegetationEnabled && !isCycles ? vegetationSettings : undefined, pullTarget, pullStep: pullDistance };
+  const complete = !!snapshot && !dirty && (isCycles ? completedCycles >= cycleTarget : geometricRunComplete(snapshot, runSettings));
   const validRun = isCycles ? !cycleSettingsError && Number.isInteger(cycleTarget) && cycleTarget > 0
+    : fixedJaw ? vegetationEnabled && validVegetation && Number.isFinite(pullTarget) && pullTarget > 0
+      && Number.isFinite(pullDistance) && pullDistance > 0 && chipThickness === 0
     : Number.isFinite(target) && depth > 0 && Number.isFinite(step) && step > 0 && (!vegetationEnabled || validVegetation);
   const locked = busy || running || workerFailed || computeSwitching;
   const vegetationStarted = (snapshot?.vegetation.pullDistance ?? 0) > 0;
@@ -167,7 +179,7 @@ export function WearApp() {
   const validUpperPose = isValidUpperSetupPose(upperPose);
   const validSetup = validUpperPose && isValidUpperSetupPose(lowerPose);
   if (validUpperPose) upperPreviewPose.current = upperPose;
-  settings.current = { target, step, share: share / 100, vegetation: vegetationEnabled && !isCycles ? vegetationSettings : undefined, mode, cycleTarget, cycleSettings };
+  settings.current = { ...runSettings, mode, cycleTarget, cycleSettings };
 
   const post = (message: WearRequest) => worker.current?.postMessage(message);
   const clearTrace = () => { traceRequestId.current++; setVegetationTrace(null); setTraceLoading(false); setTraceError(""); post({ type: "trace-off" }); };
@@ -239,7 +251,7 @@ export function WearApp() {
         setHingePreset("negative");
         setSnapshot(null); setHistory([]); setWarnings([]); setGrid(null); setDirty(false); setTimings(null);
         setSpacing(message.suggestedSpacing); setContactSpread(0); setStep(message.suggestedSpacing / 2);
-        setVegetationThickness(message.suggestedSpacing * 10); setPullDistance(message.suggestedSpacing * 50);
+        setVegetationThickness(message.suggestedSpacing * 10); setPullDistance(message.suggestedSpacing * 50); setPullTarget(message.suggestedSpacing * 500);
         setVegetationStreamThickness(message.suggestedSpacing * 2);
         setVegetationBendReach(message.suggestedSpacing * 5);
         initializeVegetationBand.current = true;
@@ -254,7 +266,7 @@ export function WearApp() {
           const rotations = setup.crowns.rotationsDegrees as [Rotation, Rotation];
           setUpperPose(upper); setLowerPose(lower); setUpperPoseMode(null); setLowerPoseMode(null);
           setCrownRotations(rotations); setCrownPitch(setup.crowns.pitch);
-          setMode("geometric"); setSpacing(p.spacing); setContactSpread(p.contactSpread); setChipThickness(p.chipThickness);
+          setMode("geometric"); setJawMotion("closing"); setSpacing(p.spacing); setContactSpread(p.contactSpread); setChipThickness(p.chipThickness);
           setAutoOpen(p.autoOpen); setShare(p.upperWearShare * 100); setStep(p.increment);
           setStopMode(p.stopMode === "total" ? "total" : "contact"); setDepth(p.stopDistance); setVegetationEnabled(false);
           setBusy(true); setStatus(`Preparing ${launchPreset.name}: restoring crown poses, spacing, and wear settings.`);
@@ -283,7 +295,7 @@ export function WearApp() {
         }
         if (message.mode !== "cycles") {
           setContactSpread(s.contactSpread ?? 0); setChipThickness(s.chipThickness ?? 0);
-          if ((s.chipThickness ?? 0) > 0) setVegetationEnabled(false);
+          if ((s.chipThickness ?? 0) > 0) { setVegetationEnabled(false); setJawMotion("closing"); }
         }
         if (initializeVegetationBand.current) { setVegetationCenterY(Number(s.recommendedVegetationCenterY.toPrecision(7))); initializeVegetationBand.current = false; }
         setHistory(previous => {
@@ -311,8 +323,13 @@ export function WearApp() {
           } else { run.current = false; setRunning(false); }
           return;
         }
-        const finished = s.closure >= config.target - 1e-8 || s.materialExhausted;
-        setStatus(manualPullPending.current ? `Vegetation pulled at fixed closure. ${format(s.vegetation.effectiveRecession, 3)} model units of cumulative nominal recession applied continuously at sliding contacts.`
+        const finished = geometricRunComplete(s, config);
+        setStatus(config.jawMotion === "fixed" ? s.remainingUpperVolume <= 0 && s.remainingLowerVolume <= 0
+          ? "Stopped: no tooth material remains."
+          : finished ? "Vegetation pull target reached. Jaw position stayed fixed; worn surfaces are ready to export."
+          : run.current ? "Vegetation wear is advancing. Both toothrows stay at the current pose."
+          : "Fixed-jaw vegetation ready. Run or step vegetation without closing the jaw."
+          : manualPullPending.current ? `Vegetation pulled at fixed closure. ${format(s.vegetation.effectiveRecession, 3)} model units of cumulative nominal recession applied continuously at sliding contacts.`
           : s.materialExhausted ? `Stopped: all opposing material paths have been exhausted.${config.vegetation ? " Vegetation can still be pulled at this pose." : ""}`
           : finished ? "Preset stopping point reached. Worn surfaces are ready to export."
           : s.closure === 0 ? "Wear grid ready. Start the run or advance one increment."
@@ -324,8 +341,10 @@ export function WearApp() {
         if (run.current && !finished) {
           timer.current = window.setTimeout(() => {
             if (!run.current) return;
+            const request = nextGeometricWearRequest(s, settings.current);
+            if (!request) { run.current = false; setRunning(false); return; }
             setBusy(true);
-            instance.postMessage({ type: "advance", target: Math.min(config.target, s.closure + config.step), share: config.share, vegetation: config.vegetation } satisfies WearRequest);
+            instance.postMessage(request);
           }, 45);
         } else { run.current = false; setRunning(false); }
       }
@@ -381,13 +400,15 @@ export function WearApp() {
     ] });
   };
   const stopSetupTools = () => { setUpperPoseMode(null); setLowerPoseMode(null); setCrownEditing(false); setHingeMode(null); };
-  const prepare = (reset = false) => {
-    if (!original || locked || !reset && (!validSetup || !validCrownSpacing || !validContactSpread || !validChipping || !Number.isFinite(spacing) || spacing <= 0)) return;
+  const prepare = (reset = false, forFixedJaw = false) => {
+    if (!original || locked || !reset && (!validSetup || !validCrownSpacing || !validContactSpread || !forFixedJaw && !validChipping || !Number.isFinite(spacing) || spacing <= 0)) return;
+    if (forFixedJaw) { setChipThickness(0); setJawMotion("fixed"); setVegetationEnabled(true); }
+    showPanel("run");
     clearTrace();
     pause(); setBusy(true); setError(""); setStatus("Sampling solid tooth geometry…"); setProgress(0);
     setSnapshot(null); setSurfaces(null); setHistory([]); setTimings(null);
     setCycle(null); setHingePreview(0); stopSetupTools();
-    post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, contactSpread: isCycles ? 0 : contactSpread, chipThickness: isCycles ? 0 : chipThickness, upperPose, lowerPose, crownRotations, crownPitch, mode });
+    post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, contactSpread: isCycles ? 0 : contactSpread, chipThickness: isCycles || forFixedJaw ? 0 : chipThickness, upperPose, lowerPose, crownRotations, crownPitch, mode });
   };
   const invalidateSetup = (message: string) => {
     clearTrace();
@@ -452,6 +473,7 @@ export function WearApp() {
   };
   const editSetup = (mode: "translate" | "rotate", target: SetupTarget = setupTarget) => {
     if (poseLocked) return;
+    showPanel(target === "hinge" ? "run" : "setup");
     stopSetupTools(); setSetupTarget(target); setHingePreview(0);
     if (target === "hinge") { setHingeMode(mode); setShowHinge(true); return; }
     // Return to the raw setup pose before showing the handles. An automatic
@@ -467,10 +489,12 @@ export function WearApp() {
   };
   const advance = (continuous: boolean) => {
     if (!snapshot || !validRun || dirty || complete || locked) return;
+    const request = isCycles ? { type: "cycles" as const, count: 1, settings: cycleSettings }
+      : nextGeometricWearRequest(snapshot, settings.current);
+    if (!request) return;
     setError(""); run.current = continuous; setRunning(continuous); setBusy(true);
     setHingePreview(0); stopSetupTools();
-    if (isCycles) post({ type: "cycles", count: 1, settings: cycleSettings });
-    else post({ type: "advance", target: Math.min(target, closure + step), share: share / 100, vegetation: settings.current.vegetation });
+    post(request);
   };
   const contactJump = () => {
     setBusy(true); setError("");
@@ -496,6 +520,24 @@ export function WearApp() {
     setFitKey(key => key + 1);
     setStatus("Prepare the wear grid for the selected simulation mode. Switching modes starts from unworn geometry.");
   };
+  const changeJawMotion = (next: JawMotion) => {
+    if (locked || isCycles || next === jawMotion || next === "fixed" && (chipThickness > 0 || (snapshot?.chipThickness ?? 0) > 0)) return;
+    setJawMotion(next); setError("");
+    if (next === "fixed") {
+      setVegetationEnabled(true);
+      // A completed closure run may already have pulled more than the default
+      // target. Offer another block of travel when switching to held wear.
+      if (!Number.isFinite(pullTarget) || pullTarget <= cumulativePull) {
+        setPullTarget(cumulativePull + (Number.isFinite(pullDistance) && pullDistance > 0 ? pullDistance * 10 : 250));
+      }
+    }
+    setStatus(next === "fixed" ? "Jaw held at the current pose. Set the total vegetation pull distance, then run."
+      : "Closure wear selected. Continue closing from the current pose.");
+  };
+  function showPanel(next: "run" | "setup" | "display") {
+    setPanel(next);
+    rail.current?.scrollTo({ top: 0 });
+  }
   const changeCycleSetting = <K extends keyof BiteCycleSettings>(key: K, value: BiteCycleSettings[K]) => {
     if (cycleSettingsLocked) return;
     setCycleSettings(current => ({ ...current, [key]: value })); setError("");
@@ -519,7 +561,7 @@ export function WearApp() {
       ? "Repeated hinge opening and closing about a common closed reference pose, with compliant distributed contact pressure and Archard wear depth = coefficient × pressure × sliding distance. Uncalibrated mechanical approximation; no plant coupling or biological timescale."
       : `Geometric mutual contact wear. Contact spread sigma ${(snapshot?.contactSpread ?? 0) > 0 ? "enables normalized Gaussian-weighted neighboring grid-cell contact with a vertical-contact check; direct local overlap is still resolved" : "is zero, preserving exact same-cell contact"}. Contact spread is a geometric approximation, not contact pressure. Continuous fractional vegetation recession follows complete straight or bounded flexible sliding routes. Stream thickness is plant-bundle diameter; bundles can slide against multiple teeth and both rows at once. Total volume loss is geometric; the contact/vegetation split is estimated within each integration interval. No calibrated branch mechanics, forces, or biological wear rates.`,
       exportedAt: new Date().toISOString(), units: unit === "u" ? "native model units (unspecified)" : unit,
-      sources: info, grid, movement: isCycles ? "Both row setup poses and any local crown tilts are applied before sampling. A single common closed pose is established for the toothrow, then the upper rotates about the configured hinge. The lower stays fixed during simulation. Exported PLYs use the closed reference assembly pose; the opening preview is display-only." : "Both row setup poses and any local crown tilts are applied before sampling. During closure the upper translates along world -Y; lower stays fixed. Exported PLYs include setup poses, initial opening, and final closure.",
+      sources: info, grid, movement: isCycles ? "Both row setup poses and any local crown tilts are applied before sampling. A single common closed pose is established for the toothrow, then the upper rotates about the configured hinge. The lower stays fixed during simulation. Exported PLYs use the closed reference assembly pose; the opening preview is display-only." : fixedJaw ? "Vegetation-only run: both toothrows remain at the current assembly pose. Vegetation slides and abrades exposed surfaces without advancing closure. Any earlier closure/contact wear remains in the history. Exported PLYs include setup poses, initial opening, and the held closure." : "Both row setup poses and any local crown tilts are applied before sampling. During closure the upper translates along world -Y; lower stays fixed. Exported PLYs include setup poses, initial opening, and final closure.",
       setup: { upper: { translation: upperPose.translation, rotationDegrees: upperPose.rotation, pivot: upperPivot,
         rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
         lower: { translation: lowerPose.translation, rotationDegrees: lowerPose.rotation, pivot: lowerPivot, rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
@@ -527,23 +569,25 @@ export function WearApp() {
           rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
           orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. Edge yaw is a middle-section width-chord estimate, distinct from multi-section matrix scoring. Includes whole-row rotation; independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
       settings: isCycles ? { autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
-        : { autoOpen, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
+        : { autoOpen, jawMotion, targetPullDistance: fixedJaw ? pullTarget : null, pullIncrement: fixedJaw ? pullDistance : null, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
       compute: { ...compute, latestFrameTimings: timings }, snapshot, cycle, warnings, history }, null, 2), "toothwear-run.json", "application/json");
   };
-  const percent = snapshot && (isCycles ? cycleTarget : target) > 0 ? Math.min(100, isCycles ? completedCycles / cycleTarget * 100 : closure / target * 100) : 0;
+  const progressTarget = isCycles ? cycleTarget : fixedJaw ? pullTarget : target;
+  const progressValue = isCycles ? completedCycles : fixedJaw ? cumulativePull : closure;
+  const percent = snapshot && Number.isFinite(progressTarget) && progressTarget > 0 ? Math.min(100, progressValue / progressTarget * 100) : 0;
   const canAdvance = !!snapshot && !dirty && !complete && validRun && !locked;
   const canPull = !!snapshot && !dirty && !locked && !isCycles && vegetationEnabled && validVegetation && Number.isFinite(pullDistance) && pullDistance > 0
     && !!surfaces?.some(surface => surface.positions.length > 0);
   const gpuStages = isCycles ? [...(compute.cycleBackend === "gpu" ? ["contact pressure & sliding"] : []), ...(compute.materialBackend === "gpu" ? ["material removal"] : []), ...(compute.meshBackend === "gpu" ? ["surface generation"] : [])]
     : ["routing", ...(compute.contactBackend === "gpu" ? ["sliding contacts"] : []), ...(compute.materialBackend === "gpu" ? ["vegetation removal"] : []), ...(compute.meshBackend === "gpu" ? ["surface generation"] : [])];
   const cpuStages = isCycles ? ["cycle orchestration, surface preparation & bookkeeping", ...(compute.cycleBackend === "gpu" ? [] : ["contact pressure & sliding"]), ...(compute.materialBackend === "gpu" ? [] : ["material removal"]), ...(compute.meshBackend === "gpu" ? [] : ["surface generation"])]
-    : [(snapshot?.contactSpread ?? 0) > 0 ? "geometric tooth contact" : "exact tooth contact", ...(compute.contactBackend === "gpu" ? [] : ["sliding contacts"]), ...(compute.materialBackend === "gpu" ? [] : ["vegetation removal"]), ...(compute.meshBackend === "gpu" ? [] : ["surface generation"])];
+    : [fixedJaw ? "run bookkeeping" : (snapshot?.contactSpread ?? 0) > 0 ? "geometric tooth contact" : "exact tooth contact", ...(compute.contactBackend === "gpu" ? [] : ["sliding contacts"]), ...(compute.materialBackend === "gpu" ? [] : ["vegetation removal"]), ...(compute.meshBackend === "gpu" ? [] : ["surface generation"])];
 
   return (
     <div className="wear-app">
       <header className="wear-header">
         <div className="wear-brand"><span className="wear-brand-mark"><Layers3 size={23} /></span><div><h1>Toothwear <span>Studio</span></h1><p>Progressive occlusion & mutual wear</p></div></div>
-        <div className="wear-header-right"><span className="wear-method">{isCycles ? "CYCLIC CONTACT WEAR" : "GEOMETRIC WEAR"}</span></div>
+        <div className="wear-header-right"><span className="wear-method">{isCycles ? "CYCLIC CONTACT WEAR" : fixedJaw ? "FIXED-JAW VEGETATION" : "GEOMETRIC WEAR"}</span></div>
       </header>
       <aside className="wear-experimental-notice" role="note" aria-label="Experimental use warning"><strong>Experimental — not for research use.</strong><span>Simulated wear has not been validated.</span></aside>
       <main className="wear-workspace">
@@ -583,12 +627,17 @@ export function WearApp() {
           {crownRows && !setupStarted && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
           {isCycles && original && <div className="wear-cycle-preview"><label><span>Opening preview <strong>{format(hingePreview * cycleSettings.openingAngle, 1)}°</strong></span><input aria-label="Jaw opening preview" type="range" min={0} max={1} step={0.01} value={hingePreview} disabled={locked || !Number.isFinite(cycleSettings.openingAngle)} onChange={event => { setHingePreview(Number(event.target.value)); stopSetupTools(); }} /></label><span>{hingePreview > 0 ? "Preview only · run and export return to closed pose" : "Closed reference pose · all teeth share this endpoint"}</span></div>}
           {!original && <div className="wear-empty"><div className="wear-empty-icon"><Layers3 size={42} strokeWidth={1} /></div><span className="wear-eyebrow">FROM UNWORN TO OCCLUDED</span><h2>Let the contact<br />shape the teeth.</h2><p>Bring your aligned toothrows together along Y.<br />Wear develops wherever the two surfaces meet.</p><button className="wear-primary" disabled={locked} onClick={loadCrowns}><Layers3 size={16} /> Build 6 × 6 crown rows <ChevronRight size={16} /></button><button className="wear-text-button" disabled={locked} onClick={() => load(true)}><Upload size={14} /> Load example toothrows</button><small>Two example PLY files · 96 MB download</small></div>}
-          {original && <div className="wear-legend"><span><i className="upper" />Upper · {isCycles ? "hinged" : "moving −Y"}</span><span><i className="lower" />Lower · fixed</span><span><i className="worn" />{(snapshot?.chipThickness ?? 0) > 0 ? "Contact wear + chips" : "Contact wear"}</span>{isCycles && showHinge && <span><i className="hinge" />Hinge axis</span>}{!isCycles && vegetationEnabled && <><span><i className="vegetation" />Vegetation wear</span>{showVegetationPaths && <span><i className="vegetation-path" />Computed paths</span>}{showSlidingContacts && <span><i className="sliding-contact" />Sliding now</span>}</>}</div>}
+          {original && <div className="wear-legend"><span><i className="upper" />Upper · {isCycles ? "hinged" : fixedJaw ? "fixed" : "moving −Y"}</span><span><i className="lower" />Lower · fixed</span><span><i className="worn" />{(snapshot?.chipThickness ?? 0) > 0 ? "Contact wear + chips" : "Contact wear"}</span>{isCycles && showHinge && <span><i className="hinge" />Hinge axis</span>}{!isCycles && vegetationEnabled && <><span><i className="vegetation" />Vegetation wear</span>{showVegetationPaths && <span><i className="vegetation-path" />Computed paths</span>}{showSlidingContacts && <span><i className="sliding-contact" />Sliding now</span>}</>}</div>}
           <div className="wear-stage-bottom"><span>Y ↑ <b>·</b> Drag to orbit <b>·</b> Scroll to zoom <b>·</b> Right drag to pan</span><span>{grid ? `${grid.nx} × ${grid.nz} columns · ${format(grid.spacing)} ${unit} pitch` : original ? crownRows ? "6 upper + 6 lower · linked crown rotations" : "Row setup preview" : "Source coordinates preserved"}</span></div>
         </section>
 
-        <aside className="wear-rail">
-          <section className="wear-section">
+        <aside className="wear-rail" ref={rail}>
+          <nav className="wear-panel-nav" aria-label="Wear controls">
+            <button aria-pressed={panel === "run"} onClick={() => showPanel("run")}><Play size={13} /> Run</button>
+            <button aria-pressed={panel === "setup"} onClick={() => showPanel("setup")}><Layers3 size={13} /> Setup{dirty && original && <i aria-label="Unprepared changes" />}</button>
+            <button aria-pressed={panel === "display"} onClick={() => showPanel("display")}><Eye size={13} /> Display & export</button>
+          </nav>
+          <section className="wear-section" hidden={panel !== "setup"}>
             <h2><span className="wear-section-number">01</span> Toothrow surfaces <Upload size={15} /></h2>
             <button className="wear-secondary full wear-build-crowns" disabled={locked} onClick={loadCrowns}>Build 6 × 6 crown rows <span>STL × 2</span></button>
             <button className="wear-secondary full" disabled={locked} onClick={() => load(true)}>Load example toothrows <span>96 MB</span></button>
@@ -599,11 +648,8 @@ export function WearApp() {
               {[0, 1].map(i => <label key={i}>Surface {i + 1}<input aria-label={`Surface ${i + 1} file`} type="file" accept=".ply,.stl" disabled={locked} onChange={event => setFiles(current => { const next: [File | null, File | null] = [...current]; next[i] = event.target.files?.[0] ?? null; return next; })} /></label>)}<button className="wear-secondary full" onClick={() => load(false)} disabled={locked || !files[0] || !files[1]}>Load selected pair</button><p className="wear-note">Closed triangle PLY or STL. Files are processed in your browser and are not uploaded. Higher Y centre is assigned upper; use Swap if needed.</p></div></details>
           </section>
 
-          <section className="wear-section">
+          <section className="wear-section" hidden={panel !== "setup"}>
             <h2><span className="wear-section-number">02</span> Prepare geometry <Layers3 size={15} /></h2>
-            <label className="wear-field"><span>Simulation mode</span><select value={mode} disabled={locked} onChange={event => changeMode(event.target.value as "geometric" | "cycles")}><option value="geometric">Fast geometric wear · default</option><option value="cycles">Repeated bite cycles · experimental</option></select></label>
-            {isCycles ? <p className="wear-note">Experimental pressure-and-sliding model; improved facet realism has not been validated. The whole upper row opens about the hinge and returns to the shared closed pose on every cycle.</p>
-              : <p className="wear-note">Default workflow: close the rows along Y and wear both teeth where they meet. Optional vegetation abrasion can run alongside contact wear.</p>}
             <fieldset className="wear-pose" disabled={poseLocked}>
               <legend>{selectedRow === "upper" ? "Upper" : "Lower"} {eachCrownTarget && crownRows ? "crown tilt · linked across all six" : "whole-row setup pose"}</legend>
               <p className="wear-note">Choose <strong>Move</strong> or <strong>Rotate</strong> above the model, then drag its colored arrows or rings. Drag away from the handles to orbit the view.</p>
@@ -647,23 +693,28 @@ export function WearApp() {
             <label className="wear-check"><input type="checkbox" checked={autoOpen} disabled={locked} onChange={e => { setAutoOpen(e.target.checked); setDirty(true); }} /> Automatically clear initial overlap along Y</label>
             <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !validChipping || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare()}><Layers3 size={15} />{surfaces && !dirty ? "Rebuild wear grid" : "Prepare wear grid"}</button>
             {snapshot && <div className="wear-prepared"><Check size={13} /><span>{isCycles ? "Closed reference offset" : gaussianPrepared ? "Initial direct contact at" : "Initial first contact at"} <strong>{format(isCycles ? closure : first, 3)} {unit}</strong>{isCycles ? " along −Y" : " closure"}{snapshot.initialOpening > 0 ? ` · opened ${format(snapshot.initialOpening, 3)} ${unit} to clear overlap` : ""}</span></div>}
-            <div className="wear-compute">
-              <label className="wear-field"><span>Computation</span><select value={compute.preference} disabled={locked || traceLoading || compute.backend === "initializing"} onChange={e => changeCompute(e.target.value as ComputePreference)}><option value="auto">Automatic · GPU when available</option><option value="cpu">CPU reference</option></select></label>
-              <div className={`wear-compute-status ${compute.backend}`} role="status" aria-live="polite">
-                <strong>{computeSwitching || compute.backend === "initializing" ? <><LoaderCircle size={11} className="spin" /> Checking compute backend…</> : compute.backend === "webgpu" ? "GPU + CPU" : compute.preference === "cpu" ? "CPU reference" : "CPU fallback"}</strong>
-                {!computeSwitching && compute.backend !== "initializing" && <>
-                  <span>{compute.backend === "webgpu" ? `GPU: ${gpuStages.join(", ") || "no active stages"}. CPU: ${cpuStages.join(", ")}.` : isCycles ? "Contact pressure, sliding, wear, and surface generation on CPU." : "Wear, routing, and surface generation on CPU."}</span>
-                  {compute.label && <span className="wear-compute-device">{compute.label}</span>}
-                  {compute.reason && <span>{compute.reason}</span>}
-                </>}
-              </div>
-              {timings && <div className="wear-compute-timings"><span>Last geometry update</span><dl><div><dt>Solve</dt><dd>{duration(timings.solveMs)}</dd></div><div><dt>Surfaces</dt><dd>{duration(timings.meshMs)}</dd></div><div><dt>Paths</dt><dd>{duration(timings.previewMs)}</dd></div></dl></div>}
-              <p className="wear-note">Switch while idle to compare backends. The current worn geometry is preserved.</p>
-            </div>
+
           </section>
 
-          <section className="wear-section">
-            <h2><span className="wear-section-number">03</span> {isCycles ? "Bite cycles & wear" : "Closure & wear"} <ArrowDown size={16} /></h2>
+          <section className="wear-section wear-jaw-section" hidden={panel !== "run"} aria-labelledby="jaw-motion-heading">
+            <h2 id="jaw-motion-heading">Jaw motion <ArrowDown size={16} /></h2>
+            {!isCycles && <>
+              <div className="wear-jaw-options" role="group" aria-label="Jaw motion">
+                <button aria-pressed={!fixedJaw} disabled={locked} onClick={() => changeJawMotion("closing")}><ArrowDown size={17} /><strong>Close jaw</strong><span>Tooth contact + optional vegetation</span></button>
+                <button aria-pressed={fixedJaw} disabled={locked || chipThickness > 0 || (snapshot?.chipThickness ?? 0) > 0} onClick={() => changeJawMotion("fixed")}><Leaf size={17} /><strong>Hold jaw fixed</strong><span>Vegetation wear only</span></button>
+              </div>
+              {(chipThickness > 0 || (snapshot?.chipThickness ?? 0) > 0) && <div className="wear-fixed-preparation">
+                <p>This setup uses thin-wall chipping, which cannot run with vegetation. Rebuilding turns chipping off and resets wear to the unworn setup.</p>
+                <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare(false, true)}>Rebuild for fixed-jaw vegetation</button>
+              </div>}
+            </>}
+            {(!original || !snapshot || dirty) && <button className="wear-secondary full wear-setup-link" onClick={() => showPanel("setup")}><Layers3 size={14} />{!original ? "Load teeth in Setup" : "Prepare geometry in Setup"}<ChevronRight size={13} /></button>}
+            <div className="wear-run-buttons"><button className="wear-primary" disabled={running ? false : !canAdvance} onClick={() => running ? pause() : advance(true)}>{running ? <Pause size={16} /> : <Play size={16} />}{running ? "Pause" : complete ? "Complete" : isCycles ? "Run bites" : fixedJaw ? "Run vegetation" : "Run wear"}</button><button className="wear-secondary" disabled={!canAdvance} onClick={() => advance(false)} title={isCycles ? "Run one complete bite cycle" : fixedJaw ? "Pull one vegetation increment without moving the jaw" : "Advance one closure increment"}><SkipForward size={16} />{isCycles ? "One bite" : "Step"}</button><button className="wear-secondary wear-icon" disabled={!snapshot || locked} onClick={() => prepare(true)} title="Reset to unworn geometry using the last prepared settings"><RotateCcw size={16} /></button></div>
+            <details className="wear-run-details"><summary>Wear model · {isCycles ? "repeated bites" : "fast geometric"}</summary>
+            <label className="wear-field"><span>Simulation mode</span><select value={mode} disabled={locked} onChange={event => changeMode(event.target.value as "geometric" | "cycles")}><option value="geometric">Fast geometric wear · default</option><option value="cycles">Repeated bite cycles · experimental</option></select></label>
+            {isCycles ? <p className="wear-note">Experimental pressure-and-sliding model; improved facet realism has not been validated. The whole upper row opens about the hinge and returns to the shared closed pose on every cycle.</p>
+              : <p className="wear-note">Fast geometric wear supports jaw closure and fixed-jaw vegetation. Changing the wear model starts from unworn geometry.</p>}
+            </details>
             {isCycles ? <>
               <fieldset className="wear-pose wear-hinge-panel" disabled={cycleSettingsLocked || !original}>
                 <legend>Jaw hinge</legend>
@@ -684,6 +735,11 @@ export function WearApp() {
               <p className="wear-note">Wear depth = coefficient × contact pressure × sliding distance. Pressure without sliding produces no wear. These are uncalibrated model parameters; use units consistently. Steps may be refined to resolve the hinge motion.</p>
               {cycleSettingsError && <p className="wear-warning">{cycleSettingsError}</p>}
               {cycle && <dl className="wear-cycle-metrics"><div><dt>Completed bites</dt><dd>{format(completedCycles, 0)}</dd></div><div><dt>Contact area at peak load</dt><dd>{format(cycle.contactArea, 3)} {unit}²</dd></div><div><dt>Peak supported load</dt><dd>{format(cycle.supportedLoad, 2)} N</dd></div><div><dt>Peak pressure</dt><dd>{format(cycle.peakPressure, 3)} N/{unit}²</dd></div><div><dt>Maximum sliding increment</dt><dd>{format(cycle.maxSlip, 4)} {unit}</dd></div><div><dt>Compliant seating at peak load</dt><dd>{format(cycle.compliantApproach, 4)} {unit}</dd></div><div><dt>Upper removed · last bite</dt><dd>{format(cycle.removedUpperVolume, 4)} {unit}³</dd></div><div><dt>Lower removed · last bite</dt><dd>{format(cycle.removedLowerVolume, 4)} {unit}³</dd></div><div><dt>Resolved substeps · last bite</dt><dd>{format(cycle.substeps, 0)}</dd></div></dl>}
+            </> : fixedJaw ? <>
+              <div className="wear-field-pair"><NumberField label="Stop at total pull distance" value={pullTarget} min={0.001} step="any" suffix={unit} disabled={locked} onChange={setPullTarget} /><NumberField label="Pull increment" value={pullDistance} min={0.001} step="any" suffix={unit} disabled={locked} onChange={setPullDistance} /></div>
+              <p className="wear-note">Both toothrows stay at their current pose{snapshot ? ` (${format(closure, 3)} ${unit} closure)` : " after grid preparation"}. Only vegetation advances. The stopping distance includes any vegetation already pulled in this run; increase it to continue.</p>
+              <p className="wear-note">Set the band and bundle size below so vegetation slides against the teeth. Existing tooth-to-tooth wear is preserved; fixed-jaw pulls add vegetation wear only.</p>
+              {!validRun && <p className="wear-warning">Use positive, finite pull distances and valid vegetation settings below.</p>}
             </> : <>
             <label className="wear-field"><span>Preset stopping point</span><select value={stopMode} disabled={locked} onChange={e => setStopMode(e.target.value as "contact" | "total")}><option value="contact">Distance beyond initial {gaussianPrepared ? "direct" : "first"} contact</option><option value="total">Total closure from prepared pose</option></select></label>
             <div className="wear-field-pair"><NumberField label="Stop distance" value={depth} min={0.001} step="any" suffix={unit} disabled={locked} onChange={setDepth} /><NumberField label="Closure increment" value={step} min={0.001} step="any" suffix={unit} disabled={locked} onChange={setStep} /></div>
@@ -691,16 +747,16 @@ export function WearApp() {
             <p className="wear-note">Equal wear removes the same local depth from both rows. The upper translates −Y; the lower stays fixed. Tooth-to-tooth wear stays active during closure, including when vegetation is enabled.</p>
             {gaussianPrepared && <p className="wear-note">The stopping reference and projected contact area measure direct same-cell contact. Gaussian neighboring-cell wear can begin earlier.</p>}
             </>}
-            <div className="wear-run-buttons"><button className="wear-primary" disabled={running ? false : !canAdvance} onClick={() => running ? pause() : advance(true)}>{running ? <Pause size={16} /> : <Play size={16} />}{running ? "Pause" : complete ? "Complete" : isCycles ? "Run bites" : "Run wear"}</button><button className="wear-secondary" disabled={!canAdvance} onClick={() => advance(false)} title={isCycles ? "Run one complete bite cycle" : "Advance one closure increment"}><SkipForward size={16} />{isCycles ? "One bite" : "Step"}</button><button className="wear-secondary wear-icon" disabled={!snapshot || locked} onClick={() => prepare(true)} title="Reset to unworn geometry using the last prepared settings"><RotateCcw size={16} /></button></div>
-            {!isCycles && snapshot && closure < first && <button className="wear-text-button" disabled={!canAdvance} onClick={contactJump}>Move to initial {gaussianPrepared ? "direct-contact" : "first-contact"} closure <ChevronRight size={12} /></button>}
+
+            {!isCycles && !fixedJaw && snapshot && closure < first && <button className="wear-text-button" disabled={!canAdvance} onClick={contactJump}>Move to initial {gaussianPrepared ? "direct-contact" : "first-contact"} closure <ChevronRight size={12} /></button>}
             {dirty && snapshot && <p className="wear-warning">Prepare the grid to apply edited settings, or reset to restore the last prepared settings.</p>}
-            {snapshot && (isCycles ? cycleTarget < completedCycles : target < closure - 1e-8) && <p className="wear-warning">Reset the run to use a stopping point before the current {isCycles ? "bite count" : "closure"}.</p>}
+            {snapshot && (isCycles ? cycleTarget < completedCycles : fixedJaw ? pullTarget < cumulativePull - 1e-8 : target < closure - 1e-8) && <p className="wear-warning">Reset the run to use a stopping point before the current {isCycles ? "bite count" : fixedJaw ? "cumulative pull distance" : "closure"}.</p>}
           </section>
 
-          <section className="wear-section wear-vegetation-section">
-            <h2><span className="wear-section-number">04</span> Vegetation abrasion <Leaf size={15} /></h2>
+          <section className="wear-section wear-vegetation-section" hidden={panel !== "run"}>
+            <h2>Vegetation abrasion <Leaf size={15} /></h2>
             {isCycles && <p className="wear-note">Vegetation mode is available with geometric closure. Repeated bite cycles currently model tooth-to-tooth contact only.</p>}
-            <label className="wear-check"><input type="checkbox" checked={vegetationEnabled} disabled={vegetationLocked} onChange={e => setVegetationEnabled(e.target.checked)} /> Enable sideways branch stripping</label>
+            <label className="wear-check"><input type="checkbox" checked={vegetationEnabled} disabled={vegetationLocked || fixedJaw} onChange={e => setVegetationEnabled(e.target.checked)} /> Enable sideways branch stripping</label>
             {!isCycles && <p className="wear-note">Vegetation wears surfaces as it slides alongside them, including areas without tooth-to-tooth contact. A head-on obstruction alone does not cause abrasion.</p>}
             {!isCycles && vegetationEnabled && <>
               <label className="wear-field"><span>Vegetation path</span><select value={vegetationPathMode} disabled={vegetationLocked} onChange={e => setVegetationPathMode(e.target.value as "straight" | "flexible")}><option value="flexible">Flexible around teeth</option><option value="straight">Straight sliding paths</option></select></label>
@@ -709,8 +765,8 @@ export function WearApp() {
               <NumberField label="Stream thickness · bundle diameter" value={vegetationStreamThickness} min={0} step="any" suffix={unit} disabled={vegetationLocked} onChange={setVegetationStreamThickness} />
               <p className="wear-note">The band distributes bundle centres; each bundle extends half its diameter beyond its path. A bundle can slide against several teeth, including both rows at once. Wider bundles need wider gaps; diameter stays fixed while bending. Use 0 for the original thin paths.</p>
               {vegetationPathMode === "flexible" && <><NumberField label="Bend reach" value={vegetationBendReach} min={0} step="any" suffix={unit} disabled={vegetationLocked} onChange={setVegetationBendReach} /><p className="wear-note">Total vertical and sideways detour allowed, including return to the band at the exit. Paths need an open way through. Bends use column-pitch steps; less than one pitch gives straight paths.</p></>}
-              <div className="wear-field-pair"><NumberField label="Abrasion per pull distance" value={abrasionRate} min={0.000001} step="any" suffix="u/u" disabled={vegetationLocked} onChange={setAbrasionRate} /><NumberField label="Pull per closure distance" value={pullPerClosure} min={0} step="any" suffix="u/u" disabled={vegetationLocked} onChange={setPullPerClosure} /></div>
-              <p className="wear-note">The entrance and exit band stay at this world Y. Closure combines tooth contact wear with vegetation pulls at the ratio above; use 0 for manual pulls only.</p>
+              <div className="wear-field-pair"><NumberField label="Abrasion per pull distance" value={abrasionRate} min={0.000001} step="any" suffix="u/u" disabled={vegetationLocked} onChange={setAbrasionRate} />{!fixedJaw && <NumberField label="Pull per closure distance" value={pullPerClosure} min={0} step="any" suffix="u/u" disabled={vegetationLocked} onChange={setPullPerClosure} />}</div>
+              <p className="wear-note">The entrance and exit band stay at this world Y. {fixedJaw ? "The jaw stays fixed while vegetation is pulled to the total distance above." : "Closure combines tooth contact wear with vegetation pulls at the ratio above; use 0 for manual pulls only."}</p>
               <label className="wear-check"><input type="checkbox" checked={showVegetation} onChange={e => setShowVegetation(e.target.checked)} /> Show incoming band & {vegetationPathMode === "flexible" ? "bend reach" : "pull direction"}</label>
               {showVegetation && vegetationPathMode === "flexible" && <p className="wear-note">Solid outline: incoming band. Dashed outline: possible bend range. Arrows show pull direction, not individual paths.</p>}
               <div className="wear-path-display">
@@ -725,8 +781,8 @@ export function WearApp() {
                 </div>}
                 <p className="wear-note">Yellow paths follow computed routes; translucent sleeves show bundle diameter. Magenta marks all sliding contacts, including simultaneous contact with both rows. Contacts use conservative grid cells and may appear beyond a sleeve; finer column pitch improves precision. Green records vegetation wear already removed. Previewing does not wear the teeth.</p>
               </div>
-              <div className="wear-manual-pull"><NumberField label="Manual pull distance" value={pullDistance} min={0.001} step="any" suffix={unit} disabled={locked} onChange={setPullDistance} /><button className="wear-secondary full" disabled={!canPull} onClick={pullVegetation}><Leaf size={14} /> Pull vegetation at current pose</button></div>
-              <p className="wear-note">Every pull adds proportional recession at sliding contacts, including pulls smaller than the column pitch. A manual pull holds the jaws fixed; continue closure to produce more tooth-to-tooth wear.</p>
+              {!fixedJaw && <div className="wear-manual-pull"><NumberField label="Manual pull distance" value={pullDistance} min={0.001} step="any" suffix={unit} disabled={locked} onChange={setPullDistance} /><button className="wear-secondary full" disabled={!canPull} onClick={pullVegetation}><Leaf size={14} /> Pull vegetation at current pose</button></div>}
+              <p className="wear-note">Every pull adds proportional recession at sliding contacts, including pulls smaller than the column pitch. {fixedJaw ? "Run or step vegetation using the fixed-jaw controls above." : "A manual pull holds the jaws fixed; choose Hold jaw fixed above for a continuous vegetation-only run."}</p>
               {!validVegetation && <p className="wear-warning">Enter a finite band centre, positive band thickness and abrasion rate, and nonnegative bundle diameter, bend reach, and pull-to-closure ratio.</p>}
               {snapshot && <dl className="wear-vegetation-metrics"><div className="wear-contact-measurement"><dt>Tooth contact · upper removed</dt><dd>{format(snapshot.contactRemovedUpperVolume)} {unit}³</dd></div><div className="wear-contact-measurement"><dt>Tooth contact · lower removed</dt><dd>{format(snapshot.contactRemovedLowerVolume)} {unit}³</dd></div><div className="wear-vegetation-measurement"><dt>Vegetation · upper removed</dt><dd>{format(snapshot.vegetation.removedUpperVolume)} {unit}³</dd></div><div><dt>Vegetation · lower removed</dt><dd>{format(snapshot.vegetation.removedLowerVolume)} {unit}³</dd></div><div><dt>Cumulative pull</dt><dd>{format(snapshot.vegetation.pullDistance, 3)} {unit}</dd></div><div><dt>Nominal recession</dt><dd>{format(snapshot.vegetation.effectiveRecession, 3)} {unit}</dd></div></dl>}
               <p className="wear-note">Total volume loss is geometric; the contact/vegetation split is estimated within each integration interval.</p>
@@ -734,7 +790,7 @@ export function WearApp() {
             </>}
           </section>
 
-          <section className="wear-section wear-display-section">
+          <section className="wear-section wear-display-section" hidden={panel !== "display"}>
             <h2><Eye size={15} /> Display & export</h2>
             <label className="wear-field"><span>Surface shading</span><select value={shading} onChange={e => setShading(e.target.value as WearShading)}><option value="relief">Relief · directional light & cavities</option><option value="studio">Soft studio · original lighting</option></select></label>
             {shading === "relief" && <div className="wear-shading-controls">
@@ -747,15 +803,30 @@ export function WearApp() {
             <button className="wear-text-button" disabled={!snapshot || locked || dirty} onClick={exportReport}><ArrowDownToLine size={13} /> Download run settings & measurements</button>
             <p className="wear-note">Exports contain the sampled, worn solids in {isCycles ? "the closed reference assembly pose" : "their current assembly pose"}. Source files stay untouched.</p>
           </section>
-          <div className="wear-model-note">{isCycles ? "Hinge kinematics, compliant contact, and pressure × sliding wear. Force and material parameters are user assumptions, not a calibrated prediction of Camarasaurus feeding or biological time." : "Geometric contact and material removal. This model does not predict bite forces, wear rates, or elapsed biological time."}</div>
+          <section className="wear-section" hidden={panel !== "run"}>
+            <details className="wear-compute wear-run-details"><summary>Computation & performance</summary>
+              <label className="wear-field"><span>Computation</span><select value={compute.preference} disabled={locked || traceLoading || compute.backend === "initializing"} onChange={e => changeCompute(e.target.value as ComputePreference)}><option value="auto">Automatic · GPU when available</option><option value="cpu">CPU reference</option></select></label>
+              <div className={`wear-compute-status ${compute.backend}`} role="status" aria-live="polite">
+                <strong>{computeSwitching || compute.backend === "initializing" ? <><LoaderCircle size={11} className="spin" /> Checking compute backend…</> : compute.backend === "webgpu" ? "GPU + CPU" : compute.preference === "cpu" ? "CPU reference" : "CPU fallback"}</strong>
+                {!computeSwitching && compute.backend !== "initializing" && <>
+                  <span>{compute.backend === "webgpu" ? `GPU: ${gpuStages.join(", ") || "no active stages"}. CPU: ${cpuStages.join(", ")}.` : isCycles ? "Contact pressure, sliding, wear, and surface generation on CPU." : "Wear, routing, and surface generation on CPU."}</span>
+                  {compute.label && <span className="wear-compute-device">{compute.label}</span>}
+                  {compute.reason && <span>{compute.reason}</span>}
+                </>}
+              </div>
+              {timings && <div className="wear-compute-timings"><span>Last geometry update</span><dl><div><dt>Solve</dt><dd>{duration(timings.solveMs)}</dd></div><div><dt>Surfaces</dt><dd>{duration(timings.meshMs)}</dd></div><div><dt>Paths</dt><dd>{duration(timings.previewMs)}</dd></div></dl></div>}
+              <p className="wear-note">Switch while idle to compare backends. The current worn geometry is preserved.</p>
+            </details>
+          </section>
+          <div className="wear-model-note" hidden={panel !== "run"}>{isCycles ? "Hinge kinematics, compliant contact, and pressure × sliding wear. Force and material parameters are user assumptions, not a calibrated prediction of Camarasaurus feeding or biological time." : "Geometric contact and material removal. This model does not predict bite forces, wear rates, or elapsed biological time."}</div>
         </aside>
 
         <section className="wear-results" aria-label="Wear measurements">
-          <div className="wear-progress-block"><div><span className="wear-eyebrow">{running ? "RUNNING" : !isCycles && snapshot?.materialExhausted ? "MATERIAL EXHAUSTED" : complete ? "STOPPING POINT REACHED" : snapshot ? "READY TO ADVANCE" : "SESSION PROGRESS"}</span><strong>{format(percent, 0)}<small>%</small></strong></div><div className="wear-progress-track"><i style={{ width: `${percent}%` }} /></div><p>{isCycles ? `${format(completedCycles, 0)} / ${format(cycleTarget, 0)} bites` : `${format(closure, 3)} / ${snapshot ? format(target, 3) : "—"} ${unit} closure`}</p></div>
+          <div className="wear-progress-block"><div><span className="wear-eyebrow">{running ? "RUNNING" : !isCycles && (fixedJaw ? noMaterial : snapshot?.materialExhausted) ? "MATERIAL EXHAUSTED" : complete ? "STOPPING POINT REACHED" : snapshot ? "READY TO ADVANCE" : "SESSION PROGRESS"}</span><strong>{format(percent, 0)}<small>%</small></strong></div><div className="wear-progress-track"><i style={{ width: `${percent}%` }} /></div><p>{isCycles ? `${format(completedCycles, 0)} / ${format(cycleTarget, 0)} bites` : fixedJaw ? `${format(cumulativePull, 3)} / ${format(pullTarget, 3)} ${unit} vegetation pull · jaw held at ${format(closure, 3)} ${unit}` : `${format(closure, 3)} / ${snapshot ? format(target, 3) : "—"} ${unit} closure`}</p></div>
           <Metric label="Upper removed" value={format(snapshot?.removedUpperVolume)} unit={`${unit}³`} color="upper" />
           <Metric label="Lower removed" value={format(snapshot?.removedLowerVolume)} unit={`${unit}³`} color="lower" />
           <Metric label={isCycles ? "Contact at peak load" : gaussianPrepared ? "Projected direct contact" : "Projected contact"} value={format(isCycles ? cycle?.contactArea : snapshot?.contactArea)} unit={`${unit}²`} />
-          <div className="wear-chart"><span>Removed volume / {isCycles ? "bite count" : "closure"}</span><WearChart history={history} cycles={isCycles} /></div>
+          <div className="wear-chart"><span>Removed volume / {isCycles ? "bite count" : fixedJaw ? "vegetation pull" : "closure"}</span><WearChart history={history} cycles={isCycles} vegetation={fixedJaw} /></div>
         </section>
       </main>
       <footer className={`wear-status ${error ? "has-error" : ""}`} role="status" aria-live="polite"><span>{busy ? <LoaderCircle size={14} className="spin" /> : <i className={error ? "error-dot" : "status-dot"} />}{error || status}</span>{workerFailed && <button className="wear-secondary" onClick={() => window.location.reload()}>Restart app</button>}{busy && progress > 0 && progress < 1 && <strong>{Math.round(progress * 100)}%</strong>}{warnings.length > 0 && <details><summary>{warnings.length} geometry note{warnings.length > 1 ? "s" : ""}</summary><div>{warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div></details>}</footer>
@@ -769,9 +840,10 @@ function NumberField({ label, value, suffix, onChange, ...props }: { label: stri
 function Metric({ label, value, unit, color }: { label: string; value: string; unit: string; color?: string }) {
   return <div className="wear-metric"><span>{color && <i className={color} />}{label}</span><strong>{value} <small>{unit}</small></strong></div>;
 }
-function WearChart({ history, cycles = false }: { history: HistoryPoint[]; cycles?: boolean }) {
-  const maxX = Math.max(1e-9, ...history.map(p => p.closure));
+function WearChart({ history, cycles = false, vegetation = false }: { history: HistoryPoint[]; cycles?: boolean; vegetation?: boolean }) {
+  const x = (p: HistoryPoint) => vegetation ? p.vegetationPull : p.closure;
+  const maxX = Math.max(1e-9, ...history.map(x));
   const maxY = Math.max(1e-9, ...history.flatMap(p => [p.upper, p.lower]));
-  const path = (key: "upper" | "lower") => history.map((p, i) => `${i ? "L" : "M"}${4 + p.closure / maxX * 192},${47 - p[key] / maxY * 40}`).join(" ");
-  return <svg viewBox="0 0 200 52" role="img" aria-label={`Removed volume versus ${cycles ? "bite count" : "closure"}, cream for upper and teal for lower`}><path d="M4 7H196 M4 27H196 M4 47H196" stroke="#dce4e8" strokeWidth="1" fill="none" />{history.length > 1 && <><path d={path("upper")} stroke="#b59865" strokeWidth="3" fill="none" /><path d={path("lower")} stroke="#178d87" strokeWidth="1.5" strokeDasharray="4 2" fill="none" /></>}</svg>;
+  const path = (key: "upper" | "lower") => history.map((p, i) => `${i ? "L" : "M"}${4 + x(p) / maxX * 192},${47 - p[key] / maxY * 40}`).join(" ");
+  return <svg viewBox="0 0 200 52" role="img" aria-label={`Removed volume versus ${cycles ? "bite count" : vegetation ? "vegetation pull" : "closure"}, cream for upper and teal for lower`}><path d="M4 7H196 M4 27H196 M4 47H196" stroke="#dce4e8" strokeWidth="1" fill="none" />{history.length > 1 && <><path d={path("upper")} stroke="#b59865" strokeWidth="3" fill="none" /><path d={path("lower")} stroke="#178d87" strokeWidth="1.5" strokeDasharray="4 2" fill="none" /></>}</svg>;
 }
