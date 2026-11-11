@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BoxGeometry, Euler, Quaternion, Vector3 } from "three";
-import { crownRotationForAngles, crownRotationForEdit, estimateCrownReference, measureCrownInclination, type CrownReference } from "../src/wear/crownOrientation";
+import { crownRotationForAngles, crownRotationForEdit, estimateCrownReference, measureCrownInclination, measureCrownAxialYaw, type CrownReference } from "../src/wear/crownOrientation";
 import type { Vec3 } from "../src/wear/crownRows";
 
 const zero: Vec3 = [0, 0, 0];
@@ -62,23 +62,47 @@ describe("crown slider rotations", () => {
     }
   });
 
-  it("changes yaw about the plane normal without changing 3D inclination or flipping at the wrap", () => {
-    let current: Vec3 = [20, 15, -25];
-    const whole: Vec3 = [13, 27, 9];
-    const inclination = measureCrownInclination(lower, current, whole, "lower")!.inclination;
-    for (const yaw of [85, 89, 90, -89, -85]) {
-      const before = measureCrownInclination(lower, current, whole, "lower")!;
-      const next = crownRotationForEdit(lower, current, whole, "lower", { angle: "edgeYaw", value: yaw });
-      const after = measureCrownInclination(lower, next, whole, "lower")!;
-      expect(((after.edgeYaw! - yaw + 270) % 180) - 90).toBeCloseTo(0, 9);
-      expect(after.inclination).toBeCloseTo(inclination, 9);
-      const worldBefore = quaternion(whole).multiply(quaternion(current)), worldAfter = quaternion(whole).multiply(quaternion(next));
-      const delta = worldAfter.multiply(worldBefore.invert());
-      expect(delta.x).toBeCloseTo(0, 10); expect(delta.z).toBeCloseTo(0, 10);
-      const expected = Math.abs(((yaw - before.edgeYaw! + 270) % 180) - 90);
-      expect(quaternion(current).angleTo(quaternion(next)) * 180 / Math.PI).toBeCloseTo(expected, 7);
-      current = next;
+  it("spins around the actual tooth long axis without changing either inclination", () => {
+    for (const row of ["upper", "lower"] as const) for (const whole of [zero, [13, 27, 9] as Vec3]) {
+      const reference: CrownReference = { base: [1, 2, 3], tip: [2, row === "upper" ? -8 : 12, 1], edge: [3, 0, 1] };
+      let current: Vec3 = [20, 15, -25];
+      for (const yaw of [0, 35, 120, 179, 180, -179, -120, 0]) {
+        const before = measureCrownInclination(reference, current, whole, row)!;
+        const next = crownRotationForEdit(reference, current, whole, row, { angle: "yaw", value: yaw });
+        const after = measureCrownInclination(reference, next, whole, row)!;
+        expect(((after.axialYaw! - yaw + 540) % 360) - 180).toBeCloseTo(0, 8);
+        for (const field of ["pitch", "roll", "inclination", "along", "across", "vertical"] as const) expect(after[field]).toBeCloseTo(before[field]!, 9);
+        const sourceAxis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
+        const worldBefore = quaternion(whole).multiply(quaternion(current)), worldAfter = quaternion(whole).multiply(quaternion(next));
+        const axisBefore = sourceAxis.clone().applyQuaternion(worldBefore);
+        const delta = worldAfter.clone().multiply(worldBefore.clone().invert());
+        expect(axisBefore.clone().applyQuaternion(delta).distanceTo(axisBefore)).toBeLessThan(1e-10);
+        const expected = Math.abs(((yaw - before.axialYaw! + 540) % 360) - 180);
+        expect(quaternion(current).angleTo(quaternion(next)) * 180 / Math.PI).toBeCloseTo(expected, 7);
+        current = next;
+      }
     }
+  });
+
+  it("defines axial yaw entirely in the crown frame, including with a vertical row or vertical cutting edge", () => {
+    const current: Vec3 = [20, 15, -25];
+    const a = crownRotationForEdit(lower, current, zero, "lower", { angle: "yaw", value: 37 });
+    const b = crownRotationForEdit(lower, current, [0, 0, 90], "lower", { angle: "yaw", value: 37 });
+    expect(quaternion(a).angleTo(quaternion(b))).toBeLessThan(1e-7);
+    expect(measureCrownAxialYaw(lower, a)).toBeCloseTo(37, 9);
+    expect(measureCrownAxialYaw(lower, zero)).toBeCloseTo(0, 9);
+    const edgeVertical = crownRotationForEdit(lower, [0, 0, 90], zero, "lower", { angle: "yaw", value: 45 });
+    expect(measureCrownAxialYaw(lower, edgeVertical)).toBeCloseTo(45, 9);
+  });
+
+  it("keeps the S083 long axis fixed while its cutting-edge heading changes under axial yaw", () => {
+    const reference: CrownReference = { base: [-1.6843474, 70.3649742, -.1440473], tip: [1.7140009, 35.0836151, -4.2815404], edge: [26.4339621, 0, 8.1166685] };
+    const current: Vec3 = [20, 3.054941840818941, 25];
+    const before = measureCrownInclination(reference, current, zero, "upper")!;
+    const next = crownRotationForEdit(reference, current, zero, "upper", { angle: "yaw", value: before.axialYaw! + 30 });
+    const after = measureCrownInclination(reference, next, zero, "upper")!;
+    expect(after.pitch).toBeCloseTo(before.pitch!, 9); expect(after.roll).toBeCloseTo(before.roll!, 9);
+    expect(after.edgeYaw).not.toBeCloseTo(before.edgeYaw!, 1);
   });
 
   it("changes lean direction without adding a twist and preserves an inverted hemisphere", () => {
@@ -96,7 +120,7 @@ describe("crown slider rotations", () => {
   });
 
   it("rejects undefined projections and invalid edits without changing the original pose", () => {
-    expect(() => crownRotationForEdit(lower, [0, 0, 90], zero, "lower", { angle: "edgeYaw", value: 13 })).toThrow("cutting edge is vertical");
+    expect(() => crownRotationForEdit(lower, [180, 0, 0], zero, "lower", { angle: "yaw", value: 13 })).toThrow("no unique zero");
     expect(() => crownRotationForEdit(lower, [90, 0, 0], zero, "lower", { angle: "pitch", value: 60, leanSign: 1 })).toThrow("no projection");
     expect(() => crownRotationForEdit(lower, zero, zero, "lower", { angle: "roll", value: NaN, leanSign: 1 })).toThrow("finite");
     expect(() => crownRotationForEdit(lower, zero, zero, "lower", { angle: "roll", value: -1, leanSign: 1 })).toThrow("finite");

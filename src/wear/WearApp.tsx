@@ -11,7 +11,7 @@ import type { CrownSpacingCheck } from "./crownSpacing";
 import nonImbricatedPreset from "./presets/nonImbricated.json";
 import s128Preset from "./presets/s128.json";
 import y13S083Preset from "./presets/y13S083.json";
-import { crownRotationForEdit, estimateCrownReference, measureCrownInclination, type CrownAngleEdit } from "./crownOrientation";
+import { crownRotationForEdit, estimateCrownReference, measureCrownInclination, measureCrownAxialYaw, type CrownAngleEdit } from "./crownOrientation";
 import { CrownAngles } from "./CrownAngles";
 import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
 
@@ -569,7 +569,7 @@ export function WearApp() {
         lower: { translation: lowerPose.translation, rotationDegrees: lowerPose.rotation, pivot: lowerPivot, rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
         crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
           rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
-          orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. Edge yaw is a middle-section width-chord estimate, distinct from multi-section matrix scoring. Includes whole-row rotation; independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
+          orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. axialYaw = swing-twist angle about the source crown long axis, independent of whole-row pose and the occlusal plane. edgeYaw = separate top-view cutting-edge heading from a middle-section width chord, distinct from axial yaw and multi-section matrix scoring. Inclinations and edge heading include whole-row rotation; all are independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
       settings: isCycles ? { autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
         : { autoOpen, jawMotion, targetPullDistance: fixedJaw ? pullTarget : null, pullIncrement: fixedJaw ? pullDistance : null, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
       compute: { ...compute, latestFrameTimings: timings }, snapshot, cycle, warnings, history }, null, 2), "toothwear-run.json", "application/json");
@@ -630,10 +630,10 @@ export function WearApp() {
           {crownRows && !setupStarted && !showToothAxes && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
           {showToothAxes && <div className="wear-tooth-axis-key" role="note" aria-label="Tooth axis marker legend">
             <strong>{selectedRow === "upper" ? "Upper" : "Lower"} tooth {selectedCrowns[selectedRowIndex] + 1} · tooth-local directions</strong>
-            <span><b className="axis-x">X</b> <b className="axis-y">Y</b> <b className="axis-z">Z</b> source axes · <b className="axis-long">L</b> long axis · <b className="axis-edge">E</b> edge estimate</span>
+            <span><b className="axis-x">X</b> <b className="axis-y">Y</b> <b className="axis-z">Z</b> source axes · <b className="axis-long">L</b> long axis / yaw · <b className="axis-edge">E</b> edge estimate</span>
             <details><summary>Reference frames · gray plane stays fixed in orientation</summary>
               <span>Arrows rotate with the tooth. Gray plane keeps world XZ orientation.</span>
-              <span>Rings use local X/Y/Z; sliders use occlusal-frame axes.</span>
+              <span>Rings use local X/Y/Z. Pitch/roll use the jaw frame; yaw spins about L.</span>
               <span>Plane position is a visual guide, not a contact surface.</span>
             </details>
           </div>}
@@ -666,7 +666,7 @@ export function WearApp() {
               <legend>{selectedRow === "upper" ? "Upper" : "Lower"} {eachCrownTarget && crownRows ? "crown tilt · linked across all six" : "whole-row setup pose"}</legend>
               <p className="wear-note">Choose <strong>Move</strong> or <strong>Rotate</strong> above the model, then drag its colored arrows or rings. Drag away from the handles to orbit the view.</p>
               {!eachCrownTarget && <dl className="wear-pose-readout"><div><dt>Position · {unit}</dt><dd>{selectedPose.translation.map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>}
-              {crownRows && <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />}
+              {crownRows && <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} axialYaw={toothAxisReference ? measureCrownAxialYaw(toothAxisReference, crownRotations[selectedRowIndex]) : null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />}
               <details className="wear-angle-details" open={crownRows ? undefined : true}><summary>Source rotations · X / Y / Z</summary>
                 <dl className="wear-pose-readout"><div><dt>{eachCrownTarget ? "Each crown" : "Whole row"} · °</dt><dd>{(eachCrownTarget ? crownRotations[selectedRowIndex] : selectedPose.rotation).map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>
                 <p className="wear-note">Euler rotations from the original mesh orientation, applied X then Y then Z. These are rotation commands, not angles to the occlusal plane.</p>

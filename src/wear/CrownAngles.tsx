@@ -19,7 +19,7 @@ function Projection({ name, subtitle, value, horizontal, vertical, axis }: { nam
   </div>;
 }
 
-export function CrownAngles({ value, row, disabled, onChange }: { value: CrownInclination | null; row: string; disabled: boolean; onChange: (edit: CrownAngleEdit) => string | null }) {
+export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { value: CrownInclination | null; axialYaw: number | null; row: string; disabled: boolean; onChange: (edit: CrownAngleEdit) => string | null }) {
   const [alongSign, setAlongSign] = useState(value && value.along < 0 ? -1 : 1);
   const [acrossSign, setAcrossSign] = useState(value && value.across < 0 ? -1 : 1);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -29,7 +29,7 @@ export function CrownAngles({ value, row, disabled, onChange }: { value: CrownIn
     setControlError(null);
   }, [value]);
   const change = (edit: CrownAngleEdit) => {
-    if (!value || disabled) return "Controls unavailable";
+    if (disabled) return "Controls unavailable";
     const error = onChange(edit);
     setControlError(error);
     return error;
@@ -56,21 +56,26 @@ export function CrownAngles({ value, row, disabled, onChange }: { value: CrownIn
         <select aria-label={`${row} roll lean direction`} value={acrossSign} disabled={disabled || value.roll === null} onChange={event => { const sign = Number(event.target.value); if (!change({ angle: "roll", value: value.roll!, leanSign: sign })) setAcrossSign(sign); }}>
           <option value={1}>Tip toward +across</option><option value={-1}>Tip toward −across</option>
         </select>
-        <label><span>Yaw · estimated edge <strong>{angle(value.edgeYaw)}</strong></span>
-          <input aria-label={`${row} crown yaw angle`} type="range" min="-90" max="90" step="0.1" value={value.edgeYaw ?? 0} disabled={disabled || value.edgeYaw === null} onChange={event => change({ angle: "edgeYaw", value: Number(event.target.value) })} />
-        </label>
-        <p className="wear-note">All six crowns rotate about their own centers. Roll turns about the jawline; pitch about the across-row axis; yaw about the occlusal-plane normal. The other measured angles update naturally.</p>
-        <p className="wear-note">Pitch and roll: 0–90°. Yaw 0° aligns the estimated cutting edge with the jawline. A missing projection disables only that control. Prepare the wear grid after editing.</p>
+        <p className="wear-note">All six crowns rotate about their own centers. Roll turns about the jawline; pitch about the across-row axis. These two projected inclinations can affect each other.</p>
+        <p className="wear-note">Pitch and roll: 0–90°. A missing projection disables only that control. Prepare the wear grid after editing.</p>
         {controlError && <p className="wear-warning" role="alert">{controlError}</p>}
       </div>
       {!value.towardOcclusion && <p className="wear-warning">This crown points away from the opposing row.</p>}
       <details className="wear-angle-details"><summary>Axis definition & other angles</summary>
-        <p className="wear-note">During rotation, X/Y/Z mark the crown’s original local axes; L marks its estimated long axis and E its estimated cutting-edge direction. All are fixed to the original crown. E is a direction estimate, not a fitted cutting-surface plane.</p>
+        <p className="wear-note">During rotation, X/Y/Z mark the crown’s original local axes; L marks its estimated long axis (the yaw axis) and E its estimated cutting-edge direction. All are fixed to the original crown. E is a direction estimate, not a fitted cutting-surface plane.</p>
         <p className="wear-note">The gray reference patch stays parallel to world XZ, perpendicular to closure along Y. Only its display position follows the selected tooth. Rotating a whole row changes its projected jawline direction, but does not tilt this plane.</p>
         <p className="wear-note">Long axis estimated between cross-section centers at 20% and 80% of the unworn crown height. Whole-row rotation is included. The reference plane stays perpendicular to Y closure; along-row follows the row’s projected X axis. These are setup measurements, including during wear.</p>
-        <p className="wear-note">True 3D inclination: <strong>{angle(value.inclination)}</strong><br />Estimated cutting-edge yaw: <strong>{angle(value.edgeYaw)}</strong></p>
-        <p className="wear-note">Edge yaw uses the widest direction of the middle crown section, viewed from above. It may differ slightly from the multi-section edge measurement used in the parameter matrix.</p>
+        <p className="wear-note">True 3D inclination: <strong>{angle(value.inclination)}</strong><br />Cutting-edge heading along jaw (top view): <strong>{angle(value.edgeYaw)}</strong></p>
+        <p className="wear-note">Cutting-edge heading is a separate measurement, not axial yaw. It uses the widest direction of the middle crown section viewed from above, and may differ slightly from the multi-section measurement used in the parameter matrix.</p>
       </details>
-    </> : <p className="wear-note">A crown axis could not be measured in this pose. Source rotations remain available below.</p>}
+    </> : <p className="wear-note">Pitch/roll are unavailable because the crown axis or projected jawline could not be measured. Axial yaw remains available when its reference is defined.</p>}
+    <div className="wear-angle-controls" role="group" aria-label={`${row} axial yaw control`}>
+      <label><span>Yaw · spin about tooth long axis <strong>{angle(axialYaw)}</strong></span>
+        <input aria-label={`${row} crown yaw angle`} type="range" min="-180" max="180" step="0.1" value={axialYaw ?? 0} disabled={disabled || axialYaw === null} onChange={event => change({ angle: "yaw", value: Number(event.target.value) })} />
+      </label>
+      <p className="wear-note">Spins about the gold L arrow. Pitch, roll and true inclination stay unchanged. Yaw uses the original crown as its zero-twist reference; it is independent of the occlusal plane and whole-row placement.</p>
+      {value && <p className="wear-note">Separate edge heading along jaw: <strong>{angle(value.edgeYaw)}</strong></p>}
+      {controlError && !value && <p className="wear-warning" role="alert">{controlError}</p>}
+    </div>
   </div>;
 }

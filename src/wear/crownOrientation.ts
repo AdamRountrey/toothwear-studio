@@ -12,6 +12,7 @@ export type CrownInclination = {
   vertical: number;
   towardOcclusion: boolean;
   edgeYaw: number | null;
+  axialYaw: number | null;
 };
 
 /** Cross-section area centroid; signed contour integrals retain holes and
@@ -85,6 +86,21 @@ function rotation(degrees: Vec3) {
   return new Matrix4().makeRotationFromEuler(new Euler(...degrees.map(v => v % 360 * Math.PI / 180) as Vec3, "ZYX"));
 }
 
+/** Axial twist in the crown's own source frame, independent of row placement
+ * and the occlusal plane. Q = swing * twist, with twist about the fixed source
+ * base-to-tip axis. Zero twist uses the shortest swing from the original axis.
+ * At exactly reversed axes that shortest swing, and hence zero twist, is undefined. */
+export function measureCrownAxialYaw(reference: CrownReference, crown: Vec3): number | null {
+  const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base));
+  if (axis.lengthSq() < 1e-12) return null;
+  axis.normalize();
+  const q = new Quaternion().setFromRotationMatrix(rotation(crown));
+  const along = q.x * axis.x + q.y * axis.y + q.z * axis.z;
+  if (Math.hypot(along, q.w) < 1e-8) return null;
+  const degrees = 2 * Math.atan2(along, q.w) * 180 / Math.PI;
+  return ((degrees + 180) % 360 + 360) % 360 - 180;
+}
+
 /** Occlusal reference is fixed world XZ (normal to Y closure). Along-row is
  * the row's X direction projected onto that plane, including whole-row pose.
  * Pitch/roll here are projected long-axis inclinations, not Euler commands. */
@@ -105,6 +121,7 @@ export function measureCrownInclination(reference: CrownReference, crown: Vec3, 
     pitch: projected(along), roll: projected(across), inclination: Math.atan2(Math.abs(vertical), Math.hypot(along, across)) * 180 / Math.PI,
     along, across, vertical, towardOcclusion: (row === "upper" ? -vertical : vertical) >= -1e-8,
     edgeYaw: Math.hypot(edge.x, edge.z) < 1e-8 ? null : ((yaw + 270) % 180) - 90,
+    axialYaw: measureCrownAxialYaw(reference, crown),
   };
 }
 
@@ -112,18 +129,30 @@ export type CrownAngleTarget = { pitch: number; roll: number; edgeYaw: number; a
 
 export type CrownAngleEdit =
   | { angle: "pitch" | "roll"; value: number; leanSign: number }
-  | { angle: "edgeYaw"; value: number };
+  | { angle: "yaw"; value: number };
 
 /** Slider edits are single-axis rigid rotations in the occlusal frame.
  * Roll rotates about the projected jawline, pitch about its perpendicular,
- * and yaw about the plane normal. Other projected readouts may change: trying
- * to lock them introduces a large compensating twist near horizontal poses.
+ * Yaw is an intrinsic spin about the tooth's own long axis, so it leaves both
+ * measured inclinations unchanged. Pitch/roll edits can affect each other's
+ * projected readouts; no compensating twist is added to lock those readings.
  * Euler angles are only the storage format, never the axes of this edit. */
 export function crownRotationForEdit(reference: CrownReference, crown: Vec3, wholeRow: Vec3, row: "upper" | "lower", edit: CrownAngleEdit): Vec3 {
-  if (!Number.isFinite(edit.value) || (edit.angle === "edgeYaw"
-    ? Math.abs(edit.value) > 90
+  if (!Number.isFinite(edit.value) || (edit.angle === "yaw"
+    ? Math.abs(edit.value) > 180
     : edit.value < 0 || edit.value > 90 || !Number.isFinite(edit.leanSign) || Math.abs(edit.leanSign) !== 1)) {
-    throw new Error("Use a finite pitch or roll from 0–90°, or yaw from −90–90°.");
+    throw new Error("Use a finite pitch or roll from 0–90°, or axial yaw from −180–180°.");
+  }
+  if (edit.angle === "yaw") {
+    const current = measureCrownAxialYaw(reference, crown);
+    if (current === null) throw new Error("Axial yaw has no unique zero in this reversed-axis pose. Tilt the crown slightly with the gizmo first.");
+    const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
+    const q = new Quaternion().setFromRotationMatrix(rotation(crown));
+    // Right multiplication spins around the source long axis. In world space
+    // this is exactly the currently displayed L arrow, regardless of jaw pose.
+    q.multiply(new Quaternion().setFromAxisAngle(axis, (edit.value - current) * Math.PI / 180));
+    const euler = new Euler().setFromQuaternion(q, "ZYX");
+    return [euler.x, euler.y, euler.z].map(v => v * 180 / Math.PI) as Vec3;
   }
   const rowMatrix = rotation(wholeRow), combined = rowMatrix.clone().multiply(rotation(crown));
   const alongRow = new Vector3(1, 0, 0).transformDirection(rowMatrix); alongRow.y = 0;
@@ -131,15 +160,7 @@ export function crownRotationForEdit(reference: CrownReference, crown: Vec3, who
   alongRow.normalize();
   const normal = new Vector3(0, 1, 0), acrossRow = new Vector3().crossVectors(alongRow, normal);
   let rotationAxis: Vector3, delta: number;
-  if (edit.angle === "edgeYaw") {
-    const edge = new Vector3(...reference.edge).transformDirection(combined);
-    if (Math.hypot(edge.x, edge.z) < 1e-8) throw new Error("The cutting edge is vertical; tilt the crown before setting its projected yaw.");
-    const current = Math.atan2(edge.dot(acrossRow), edge.dot(alongRow));
-    // The edge is an undirected chord. Take the shortest change modulo 180°.
-    delta = current - edit.value * Math.PI / 180;
-    delta -= Math.round(delta / Math.PI) * Math.PI;
-    rotationAxis = normal;
-  } else {
+  {
     const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base));
     if (axis.lengthSq() < 1e-12) throw new Error("A long axis could not be measured for this crown.");
     axis.transformDirection(combined);
