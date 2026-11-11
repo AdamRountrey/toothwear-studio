@@ -9,19 +9,23 @@ const upper: CrownReference = { ...lower, tip: [0, -10, 0] };
 const quaternion = (degrees: Vec3) => new Quaternion().setFromEuler(new Euler(...degrees.map(v => v * Math.PI / 180) as Vec3, "ZYX"));
 
 describe("crown slider rotations", () => {
-  it("keeps S083 roll on the jawline axis all the way to zero and back", () => {
+  it("keeps S083 yaw fixed and its long axis on the roll path all the way to zero and back", () => {
     const reference: CrownReference = { base: [-1.6843474, 70.3649742, -.1440473], tip: [1.7140009, 35.0836151, -4.2815404], edge: [26.4339621, 0, 8.1166685] };
     const start: Vec3 = [20, 3.054941840818941, 25];
     const initial = measureCrownInclination(reference, start, zero, "upper")!;
+    const sourceAxis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
     let current = start;
     for (const target of [50, 30, 10, 5, 4, 3, 2, 1, .1, 0, .1, 1, 5, 30, initial.roll!]) {
       const before = measureCrownInclination(reference, current, zero, "upper")!;
       const next = crownRotationForEdit(reference, current, zero, "upper", { angle: "roll", value: target, leanSign: -1 });
-      const delta = quaternion(next).multiply(quaternion(current).invert());
-      expect(delta.y).toBeCloseTo(0, 10); expect(delta.z).toBeCloseTo(0, 10);
-      expect(quaternion(current).angleTo(quaternion(next)) * 180 / Math.PI).toBeCloseTo(Math.abs(target - before.roll!), 7);
+      const expectedAxis = sourceAxis.clone().applyQuaternion(quaternion(current))
+        .applyAxisAngle(new Vector3(1, 0, 0), (before.roll! - target) * Math.PI / 180);
+      expect(sourceAxis.clone().applyQuaternion(quaternion(next)).distanceTo(expectedAxis)).toBeLessThan(1e-10);
+      // Small changes around zero remain small rigid motions, without a flip.
+      expect(quaternion(current).angleTo(quaternion(next)) * 180 / Math.PI).toBeLessThan(3 * Math.abs(target - before.roll!) + 1e-5);
       const after = measureCrownInclination(reference, next, zero, "upper")!;
       expect(after.roll).toBeCloseTo(target, 9);
+      expect(after.axialYaw).toBeCloseTo(initial.axialYaw!, 9);
       if (target === 5) expect(after.edgeYaw).not.toBeCloseTo(initial.edgeYaw!, 1);
       current = next;
     }
@@ -42,10 +46,14 @@ describe("crown slider rotations", () => {
       const worldBefore = rowQ.clone().multiply(quaternion(start)), worldAfter = rowQ.clone().multiply(quaternion(next));
       const jawline = new Vector3(1, 0, 0).applyQuaternion(rowQ); jawline.y = 0; jawline.normalize();
       const fixedAxis = angle === "roll" ? jawline : new Vector3().crossVectors(jawline, new Vector3(0, 1, 0));
-      // Every point on the selected world rotation axis stays fixed.
-      const delta = worldAfter.clone().multiply(worldBefore.clone().invert());
-      expect(fixedAxis.clone().applyQuaternion(delta).distanceTo(fixedAxis)).toBeLessThan(1e-10);
-      expect(worldBefore.angleTo(worldAfter) * 180 / Math.PI).toBeCloseTo(10, 8);
+      const sourceAxis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
+      const axisBefore = sourceAxis.clone().applyQuaternion(worldBefore), axisAfter = sourceAxis.clone().applyQuaternion(worldAfter);
+      // The long axis still follows the jaw-based tilt; the crown's spin is held separately.
+      expect(axisAfter.dot(fixedAxis)).toBeCloseTo(axisBefore.dot(fixedAxis), 10);
+      const projectedBefore = axisBefore.clone().addScaledVector(fixedAxis, -axisBefore.dot(fixedAxis)).normalize();
+      const projectedAfter = axisAfter.clone().addScaledVector(fixedAxis, -axisAfter.dot(fixedAxis)).normalize();
+      expect(projectedBefore.angleTo(projectedAfter) * 180 / Math.PI).toBeCloseTo(10, 8);
+      expect(after.axialYaw).toBeCloseTo(before.axialYaw!, 9);
     }
   });
 
@@ -105,7 +113,7 @@ describe("crown slider rotations", () => {
     expect(after.edgeYaw).not.toBeCloseTo(before.edgeYaw!, 1);
   });
 
-  it("changes lean direction without adding a twist and preserves an inverted hemisphere", () => {
+  it("changes lean direction while preserving axial yaw and an inverted hemisphere", () => {
     for (const row of ["upper", "lower"] as const) for (const angle of ["pitch", "roll"] as const) {
       const reference = row === "upper" ? upper : lower;
       const start: Vec3 = [160, 3, 25];
@@ -116,6 +124,44 @@ describe("crown slider rotations", () => {
       expect(after[angle]).toBeCloseTo(40, 9);
       expect(Math.sign(angle === "pitch" ? after.along : after.across)).toBe(-sign);
       expect(Math.sign(after.vertical)).toBe(Math.sign(before.vertical));
+      expect(after.axialYaw).toBeCloseTo(before.axialYaw!, 9);
+    }
+  });
+
+  it("preserves axial spin through repeated mixed tilts for either row, tilted sources, and the yaw wrap", () => {
+    for (const row of ["upper", "lower"] as const) for (const whole of [zero, [12, 31, -16] as Vec3]) for (const yaw of [0, 37, -82, 179.9, -179.9, 180]) {
+      const reference: CrownReference = { base: [1, 2, 3], tip: [2, row === "upper" ? -8 : 12, 1], edge: [3, 0, 1] };
+      const sourceAxis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
+      const edge = new Vector3(...reference.edge).normalize();
+      let current = crownRotationForEdit(reference, [20, 15, -25], whole, row, { angle: "yaw", value: yaw });
+      // Verify actual edge orientation after removing the shortest tilt, independently
+      // of the yaw readout. Keeping only the displayed number fixed would fail this.
+      const edgeWithoutTilt = (pose: Vec3) => {
+        const q = quaternion(pose), axis = sourceAxis.clone().applyQuaternion(q);
+        const swing = new Quaternion().setFromUnitVectors(sourceAxis, axis);
+        return edge.clone().applyQuaternion(q).applyQuaternion(swing.invert());
+      };
+      const initialEdge = edgeWithoutTilt(current);
+      for (let repeat = 0; repeat < 4; repeat++) for (const [angle, target] of [["pitch", 50], ["roll", 35], ["pitch", 90], ["roll", 70], ["pitch", .1], ["pitch", 0], ["pitch", 60], ["roll", .1], ["roll", 0], ["roll", 60]] as const) {
+        const before = measureCrownInclination(reference, current, whole, row)!;
+        const leanSign = (angle === "pitch" ? before.along : before.across) < 0 ? -1 : 1;
+        current = crownRotationForEdit(reference, current, whole, row, { angle, value: target, leanSign });
+        const after = measureCrownInclination(reference, current, whole, row)!;
+        expect(after[angle]).toBeCloseTo(target, 8);
+        expect(((after.axialYaw! - yaw + 540) % 360) - 180).toBeCloseTo(0, 8);
+        expect(edgeWithoutTilt(current).distanceTo(initialEdge)).toBeLessThan(1e-9);
+      }
+    }
+  });
+
+  it("leaves an unchanged tilt pose unchanged rather than snapping its spin", () => {
+    const start: Vec3 = [20, 15, -25], whole: Vec3 = [12, 31, -16];
+    for (const row of ["upper", "lower"] as const) for (const angle of ["pitch", "roll"] as const) {
+      const reference = row === "upper" ? upper : lower;
+      const before = measureCrownInclination(reference, start, whole, row)!;
+      const leanSign = Math.sign(angle === "pitch" ? before.along : before.across);
+      const next = crownRotationForEdit(reference, start, whole, row, { angle, value: before[angle]!, leanSign });
+      expect(quaternion(start).angleTo(quaternion(next))).toBeLessThan(1e-7);
     }
   });
 
@@ -125,6 +171,8 @@ describe("crown slider rotations", () => {
     expect(() => crownRotationForEdit(lower, zero, zero, "lower", { angle: "roll", value: NaN, leanSign: 1 })).toThrow("finite");
     expect(() => crownRotationForEdit(lower, zero, zero, "lower", { angle: "roll", value: -1, leanSign: 1 })).toThrow("finite");
     expect(() => crownRotationForEdit(lower, zero, [0, 0, 90], "lower", { angle: "roll", value: 30, leanSign: 1 })).toThrow("row is vertical");
+    expect(() => crownRotationForEdit(lower, [180, 0, 0], zero, "lower", { angle: "roll", value: 60, leanSign: 1 })).toThrow("no unique zero");
+    expect(() => crownRotationForEdit(lower, [160, 0, 0], zero, "lower", { angle: "roll", value: 90, leanSign: 1 })).toThrow("reverses the source long axis");
     expect(zero).toEqual([0, 0, 0]);
   });
 });

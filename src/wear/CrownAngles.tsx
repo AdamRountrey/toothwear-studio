@@ -56,7 +56,7 @@ export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { valu
         <select aria-label={`${row} roll lean direction`} value={acrossSign} disabled={disabled || value.roll === null} onChange={event => { const sign = Number(event.target.value); if (!change({ angle: "roll", value: value.roll!, leanSign: sign })) setAcrossSign(sign); }}>
           <option value={1}>Tip toward +across</option><option value={-1}>Tip toward −across</option>
         </select>
-        <p className="wear-note">All six crowns rotate about their own centers. Roll turns about the jawline; pitch about the across-row axis. These two projected inclinations can affect each other.</p>
+        <p className="wear-note">All six crowns rotate about their own centers. Roll tilts the long axis across the row; pitch tilts it along the row. Both preserve axial yaw. These two projected inclinations can affect each other.</p>
         <p className="wear-note">Pitch and roll: 0–90°. A missing projection disables only that control. Prepare the wear grid after editing.</p>
         {controlError && <p className="wear-warning" role="alert">{controlError}</p>}
       </div>

@@ -86,6 +86,13 @@ function rotation(degrees: Vec3) {
   return new Matrix4().makeRotationFromEuler(new Euler(...degrees.map(v => v % 360 * Math.PI / 180) as Vec3, "ZYX"));
 }
 
+/** Q = swing * twist. The supplied long axis is normalized and source-local. */
+function axialTwist(axis: Vector3, q: Quaternion): Quaternion | null {
+  const along = q.x * axis.x + q.y * axis.y + q.z * axis.z;
+  if (Math.hypot(along, q.w) < 1e-8) return null;
+  return new Quaternion(axis.x * along, axis.y * along, axis.z * along, q.w).normalize();
+}
+
 /** Axial twist in the crown's own source frame, independent of row placement
  * and the occlusal plane. Q = swing * twist, with twist about the fixed source
  * base-to-tip axis. Zero twist uses the shortest swing from the original axis.
@@ -95,9 +102,9 @@ export function measureCrownAxialYaw(reference: CrownReference, crown: Vec3): nu
   if (axis.lengthSq() < 1e-12) return null;
   axis.normalize();
   const q = new Quaternion().setFromRotationMatrix(rotation(crown));
-  const along = q.x * axis.x + q.y * axis.y + q.z * axis.z;
-  if (Math.hypot(along, q.w) < 1e-8) return null;
-  const degrees = 2 * Math.atan2(along, q.w) * 180 / Math.PI;
+  const twist = axialTwist(axis, q);
+  if (!twist) return null;
+  const degrees = 2 * Math.atan2(twist.x * axis.x + twist.y * axis.y + twist.z * axis.z, twist.w) * 180 / Math.PI;
   return ((degrees + 180) % 360 + 360) % 360 - 180;
 }
 
@@ -131,11 +138,11 @@ export type CrownAngleEdit =
   | { angle: "pitch" | "roll"; value: number; leanSign: number }
   | { angle: "yaw"; value: number };
 
-/** Slider edits are single-axis rigid rotations in the occlusal frame.
- * Roll rotates about the projected jawline, pitch about its perpendicular,
- * Yaw is an intrinsic spin about the tooth's own long axis, so it leaves both
- * measured inclinations unchanged. Pitch/roll edits can affect each other's
- * projected readouts; no compensating twist is added to lock those readings.
+/** Pitch/roll move the long axis in the occlusal frame: roll about the projected
+ * jawline, pitch about its perpendicular. They retain the source-local axial
+ * twist, so yaw stays fixed as the long axis tilts. Yaw is an intrinsic spin
+ * about the tooth's own long axis and leaves both inclinations unchanged.
+ * Pitch/roll edits can still affect each other's projected readouts.
  * Euler angles are only the storage format, never the axes of this edit. */
 export function crownRotationForEdit(reference: CrownReference, crown: Vec3, wholeRow: Vec3, row: "upper" | "lower", edit: CrownAngleEdit): Vec3 {
   if (!Number.isFinite(edit.value) || (edit.angle === "yaw"
@@ -178,7 +185,16 @@ export function crownRotationForEdit(reference: CrownReference, crown: Vec3, who
   }
   const turn = new Matrix4().makeRotationFromQuaternion(new Quaternion().setFromAxisAngle(rotationAxis, delta));
   const local = rowMatrix.clone().invert().multiply(turn).multiply(combined);
-  const euler = new Euler().setFromRotationMatrix(local, "ZYX");
+  const sourceAxis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
+  const savedTwist = axialTwist(sourceAxis, new Quaternion().setFromRotationMatrix(rotation(crown)));
+  if (!savedTwist) throw new Error("Axial yaw has no unique zero in this reversed-axis pose. Tilt the crown slightly with the gizmo first.");
+  const q = new Quaternion().setFromRotationMatrix(local);
+  const tiltedTwist = axialTwist(sourceAxis, q);
+  if (!tiltedTwist) throw new Error("That tilt reverses the source long axis, where axial yaw has no unique zero. Choose a slightly different tilt.");
+  // Keep the new swing (long-axis direction), but replace its induced twist
+  // with the original axial setting. A source-axis twist cannot move that axis.
+  q.multiply(tiltedTwist.invert()).multiply(savedTwist).normalize();
+  const euler = new Euler().setFromQuaternion(q, "ZYX");
   return [euler.x, euler.y, euler.z].map(v => v * 180 / Math.PI) as Vec3;
 }
 
