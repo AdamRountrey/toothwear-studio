@@ -23,6 +23,8 @@ Yaw controls an estimated cutting-edge heading from the middle crown section, vi
 
 Tooth spacing is checked after crown rotations. If crowns intersect or separation is not certified, use **Space teeth to clear** before preparation. This checks crowns within each row, excluding their shared support base.
 
+While rotating a crown array or a whole row of crown copies, the selected tooth carries a direction marker. X/Y/Z are its original mesh-local axes, gold **L** is the estimated long axis used for pitch/roll, and pink **E** is the estimated cutting-edge direction used for yaw. These source directions are fixed when the original crown is loaded and rotate with the tooth; they are not re-estimated during rotation or wear. The arrows share the crown pivot for clarity and do not trace anatomical edges. The gray patch shows the fixed world-XZ occlusal reference orientation; its display position follows the selected tooth, and it is not a fitted contact surface. Whole-row rotation changes the projected jawline direction but never tilts this reference plane. The rotation rings use the local X/Y/Z axes; the numeric sliders use the occlusal-frame axes described above. **Done** hides the markers.
+
 Direct links load and prepare fresh unworn setups; click **Run wear** to begin:
 
 - [Y13-S083](https://adamrountrey.github.io/toothwear-studio/?preset=y13-s083)

@@ -65,6 +65,8 @@ export function CrownAngles({ value, row, disabled, onChange }: { value: CrownIn
       </div>
       {!value.towardOcclusion && <p className="wear-warning">This crown points away from the opposing row.</p>}
       <details className="wear-angle-details"><summary>Axis definition & other angles</summary>
+        <p className="wear-note">During rotation, X/Y/Z mark the crown’s original local axes; L marks its estimated long axis and E its estimated cutting-edge direction. All are fixed to the original crown. E is a direction estimate, not a fitted cutting-surface plane.</p>
+        <p className="wear-note">The gray reference patch stays parallel to world XZ, perpendicular to closure along Y. Only its display position follows the selected tooth. Rotating a whole row changes its projected jawline direction, but does not tilt this plane.</p>
         <p className="wear-note">Long axis estimated between cross-section centers at 20% and 80% of the unworn crown height. Whole-row rotation is included. The reference plane stays perpendicular to Y closure; along-row follows the row’s projected X axis. These are setup measurements, including during wear.</p>
         <p className="wear-note">True 3D inclination: <strong>{angle(value.inclination)}</strong><br />Estimated cutting-edge yaw: <strong>{angle(value.edgeYaw)}</strong></p>
         <p className="wear-note">Edge yaw uses the widest direction of the middle crown section, viewed from above. It may differ slightly from the multi-section edge measurement used in the parameter matrix.</p>

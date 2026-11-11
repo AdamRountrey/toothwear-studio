@@ -44,6 +44,8 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import type { VegetationDirection } from "./engine";
 import type { VegetationTrace } from "./slidingVegetation";
 import { createUpperSetupMatrix, type UpperSetupPose } from "./upperPose";
+import type { CrownReference } from "./crownOrientation";
+import { createToothAxisGuide, updateToothAxisGuide, type ToothAxisGuide } from "./toothAxisGuide";
 
 export type WearMesh = {
   positions: Float32Array;
@@ -84,6 +86,7 @@ export type WearViewportProps = {
   crownArrays?: { upper: CrownArrayPreview; lower: CrownArrayPreview };
   /** Rotate one representative crown about its own pivot, in its row's local frame. */
   crownEdit?: { row: ToothRow; index: number; rotation: [number, number, number] };
+  toothAxes?: { row: ToothRow; index: number; reference: CrownReference };
   onCrownSelect?: (row: ToothRow, index: number) => void;
   onCrownRotationChange?: (row: ToothRow, rotation: [number, number, number]) => void;
   hinge?: { origin: [number, number, number]; axis: [number, number, number]; visible: boolean };
@@ -129,6 +132,7 @@ type ViewportState = {
   renderer: WebGLRenderer;
   grid: GridHelper;
   axes: AxesHelper;
+  toothAxisGuide: ToothAxisGuide;
   surfaces: Partial<Record<SurfaceName, Surface>>;
   geometryCache: Map<WearMesh, { geometry: BufferGeometry; uses: number }>;
   fitted: boolean;
@@ -219,6 +223,8 @@ export function WearViewport(props: WearViewportProps) {
       object.renderOrder = 100;
     });
     gizmoScene.add(gizmoHelper);
+    const toothAxisGuide = createToothAxisGuide();
+    gizmoScene.add(toothAxisGuide.group);
 
     const hingeGroup = new Group();
     hingeGroup.name = "jaw-hinge-axis";
@@ -318,7 +324,7 @@ export function WearViewport(props: WearViewportProps) {
     composer.addPass(output);
 
     const state: ViewportState = {
-      scene, camera, controls, renderer, grid, axes,
+      scene, camera, controls, renderer, grid, axes, toothAxisGuide,
       upperGizmo: { controls: upperTransform, pivot: upperPivot, scene: gizmoScene, pointerId: null, target: "upper" },
       hingeGuide: { group: hingeGroup, arrows: hingeArrows, center: hingeCenter },
       surfaces: {}, geometryCache: new Map(), fitted: false, dirty: true,
@@ -429,7 +435,8 @@ export function WearViewport(props: WearViewportProps) {
         updateLighting(state, propsRef.current);
         if (propsRef.current.shading === "relief") composer.render();
         else renderer.render(scene, camera);
-        if (gizmoHelper.visible) {
+        syncToothAxes(state, propsRef.current);
+        if (gizmoHelper.visible || toothAxisGuide.group.visible) {
           const autoClear = renderer.autoClear;
           renderer.autoClear = false;
           renderer.clearDepth();
@@ -454,6 +461,7 @@ export function WearViewport(props: WearViewportProps) {
       renderer.domElement.removeEventListener("lostpointercapture", cancelGizmoDrag);
       window.removeEventListener("blur", cancelGizmoDrag);
       upperTransform.dispose();
+      toothAxisGuide.dispose();
       gizmoScene.clear();
       controls.removeEventListener("change", invalidate);
       controls.dispose();
@@ -519,7 +527,7 @@ export function WearViewport(props: WearViewportProps) {
     if (!state) return;
     syncUpperPoseGizmo(state, props);
     state.dirty = true;
-  }, [props.upperPoseMode, props.upperPoseEditable, props.lowerPoseMode, props.lowerPoseEditable, props.crownEdit, props.hingeMode, props.hingeEditable]);
+  }, [props.upperPoseMode, props.upperPoseEditable, props.lowerPoseMode, props.lowerPoseEditable, props.crownEdit, props.toothAxes, props.hingeMode, props.hingeEditable]);
 
   useEffect(() => {
     const state = stateRef.current;
@@ -823,6 +831,20 @@ function syncUpperPoseGizmo(state: ViewportState, props: WearViewportProps) {
   }
   if (gizmo.controls.object !== gizmo.pivot) gizmo.controls.attach(gizmo.pivot);
   gizmo.controls.enabled = true;
+}
+
+function syncToothAxes(state: ViewportState, props: WearViewportProps) {
+  const selected = props.toothAxes, guide = state.toothAxisGuide;
+  guide.group.visible = false;
+  if (!selected) return;
+  const { row, index, reference } = selected;
+  const array = props.crownArrays?.[row], surface = state.surfaces[row];
+  const transform = array?.transforms[index], pivot = array?.pivots[index];
+  if (!surface?.mesh.visible || !transform || !pivot || (row === "upper" ? props.upperPoseBaked : props.lowerPoseBaked)) return;
+  // Use the very same row and instance matrices as the rendered crown.
+  const world = surface.mesh.matrixWorld.clone().multiply(transform);
+  const center = new Vector3(...pivot).applyMatrix4(surface.mesh.matrixWorld);
+  updateToothAxisGuide(guide, reference, world, center);
 }
 
 function syncVisibilityAndPose(state: ViewportState, props: WearViewportProps) {

@@ -171,6 +171,8 @@ export function WearApp() {
       && Number.isFinite(pullDistance) && pullDistance > 0 && chipThickness === 0
     : Number.isFinite(target) && depth > 0 && Number.isFinite(step) && step > 0 && (!vegetationEnabled || validVegetation);
   const locked = busy || running || workerFailed || computeSwitching;
+  const toothAxisReference = crownReferences?.[selectedRowIndex];
+  const showToothAxes = !!crownRows && !!toothAxisReference && !locked && !surfaces && setupTarget !== "hinge" && activeSetupMode === "rotate";
   const vegetationStarted = (snapshot?.vegetation.pullDistance ?? 0) > 0;
   const vegetationLocked = locked || vegetationStarted || isCycles || chipThickness > 0;
   const setupStarted = isCycles ? completedCycles > 0 : closure > 0 || vegetationStarted;
@@ -600,6 +602,7 @@ export function WearApp() {
             lowerPoseMode={lowerPoseMode} lowerPoseEditable={!poseLocked} onLowerPoseChange={changeLowerPose}
             crownArrays={crownArrays}
             crownEdit={crownEditing && crownRows && eachCrownTarget ? { row: selectedRow, index: selectedCrowns[selectedRowIndex], rotation: crownRotations[selectedRowIndex] } : undefined}
+            toothAxes={showToothAxes && toothAxisReference ? { row: selectedRow, index: selectedCrowns[selectedRowIndex], reference: toothAxisReference } : undefined}
             onCrownSelect={selectCrown} onCrownRotationChange={changeCrownRotation}
             hinge={isCycles ? { origin: cycleSettings.hingeOrigin, axis: cycleSettings.hingeAxis, visible: showHinge } : undefined}
             hingeMode={hingeMode} hingeEditable={isCycles && !poseLocked}
@@ -625,6 +628,13 @@ export function WearApp() {
             <button aria-label="Finish positioning" disabled={poseLocked || activeSetupMode === null} onClick={stopSetupTools}><Check size={14} /> Done</button>
           </div>}
           {crownRows && !setupStarted && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
+          {showToothAxes && <div className="wear-tooth-axis-key" role="note" aria-label="Tooth axis marker legend">
+            <strong>{selectedRow === "upper" ? "Upper" : "Lower"} tooth {selectedCrowns[selectedRowIndex] + 1} · tooth-local directions</strong>
+            <span><b className="axis-x">X</b> <b className="axis-y">Y</b> <b className="axis-z">Z</b> source axes · <b className="axis-long">L</b> long axis · <b className="axis-edge">E</b> edge estimate</span>
+            <span>Arrows rotate with the tooth. Gray plane keeps world XZ orientation.</span>
+            <span>Rings use local X/Y/Z; sliders use occlusal-frame axes.</span>
+            <span>Plane position is a visual guide, not a contact surface.</span>
+          </div>}
           {isCycles && original && <div className="wear-cycle-preview"><label><span>Opening preview <strong>{format(hingePreview * cycleSettings.openingAngle, 1)}°</strong></span><input aria-label="Jaw opening preview" type="range" min={0} max={1} step={0.01} value={hingePreview} disabled={locked || !Number.isFinite(cycleSettings.openingAngle)} onChange={event => { setHingePreview(Number(event.target.value)); stopSetupTools(); }} /></label><span>{hingePreview > 0 ? "Preview only · run and export return to closed pose" : "Closed reference pose · all teeth share this endpoint"}</span></div>}
           {!original && <div className="wear-empty"><div className="wear-empty-icon"><Layers3 size={42} strokeWidth={1} /></div><span className="wear-eyebrow">FROM UNWORN TO OCCLUDED</span><h2>Let the contact<br />shape the teeth.</h2><p>Bring your aligned toothrows together along Y.<br />Wear develops wherever the two surfaces meet.</p><button className="wear-primary" disabled={locked} onClick={loadCrowns}><Layers3 size={16} /> Build 6 × 6 crown rows <ChevronRight size={16} /></button><button className="wear-text-button" disabled={locked} onClick={() => load(true)}><Upload size={14} /> Load example toothrows</button><small>Two example PLY files · 96 MB download</small></div>}
           {original && <div className="wear-legend"><span><i className="upper" />Upper · {isCycles ? "hinged" : fixedJaw ? "fixed" : "moving −Y"}</span><span><i className="lower" />Lower · fixed</span><span><i className="worn" />{(snapshot?.chipThickness ?? 0) > 0 ? "Contact wear + chips" : "Contact wear"}</span>{isCycles && showHinge && <span><i className="hinge" />Hinge axis</span>}{!isCycles && vegetationEnabled && <><span><i className="vegetation" />Vegetation wear</span>{showVegetationPaths && <span><i className="vegetation-path" />Computed paths</span>}{showSlidingContacts && <span><i className="sliding-contact" />Sliding now</span>}</>}</div>}
