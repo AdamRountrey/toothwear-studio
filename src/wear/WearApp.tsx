@@ -11,7 +11,7 @@ import type { CrownSpacingCheck } from "./crownSpacing";
 import nonImbricatedPreset from "./presets/nonImbricated.json";
 import s128Preset from "./presets/s128.json";
 import y13S083Preset from "./presets/y13S083.json";
-import { crownRotationForAngles, estimateCrownReference, measureCrownInclination, type CrownAngleTarget } from "./crownOrientation";
+import { crownRotationForEdit, estimateCrownReference, measureCrownInclination, type CrownAngleEdit } from "./crownOrientation";
 import { CrownAngles } from "./CrownAngles";
 import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
 
@@ -432,12 +432,12 @@ export function WearApp() {
     setCrownRotations(current => row === "upper" ? [[...rotation], current[1]] : [current[0], [...rotation]]);
     invalidateSetup(`All six ${row} crowns rotate about their own centers. Prepare the wear grid to apply this tilt.`);
   };
-  const changeCrownAngles = (row: Row, target: CrownAngleTarget): string | null => {
+  const changeCrownAngles = (row: Row, edit: CrownAngleEdit): string | null => {
     if (poseLocked) return "Reset to unworn geometry before editing the setup.";
     const index = row === "upper" ? 0 : 1, reference = crownReferences?.[index];
     if (!reference) return "A long axis could not be measured for this crown.";
     try {
-      const rotation = crownRotationForAngles(reference, crownRotations[index], row === "upper" ? upperPose.rotation : lowerPose.rotation, row, target);
+      const rotation = crownRotationForEdit(reference, crownRotations[index], row === "upper" ? upperPose.rotation : lowerPose.rotation, row, edit);
       stopSetupTools(); setSetupTarget(`${row}-crown`); setCrownEditing(true);
       changeCrownRotation(row, rotation);
       return null;

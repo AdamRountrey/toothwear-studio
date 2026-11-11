@@ -1,4 +1,4 @@
-import { Euler, Matrix4, Vector3 } from "three";
+import { Euler, Matrix4, Quaternion, Vector3 } from "three";
 import type { WearGeometry } from "./engine";
 import type { Vec3 } from "./crownRows";
 
@@ -109,6 +109,57 @@ export function measureCrownInclination(reference: CrownReference, crown: Vec3, 
 }
 
 export type CrownAngleTarget = { pitch: number; roll: number; edgeYaw: number; alongSign: number; acrossSign: number };
+
+export type CrownAngleEdit =
+  | { angle: "pitch" | "roll"; value: number; leanSign: number }
+  | { angle: "edgeYaw"; value: number };
+
+/** Slider edits are single-axis rigid rotations in the occlusal frame.
+ * Roll rotates about the projected jawline, pitch about its perpendicular,
+ * and yaw about the plane normal. Other projected readouts may change: trying
+ * to lock them introduces a large compensating twist near horizontal poses.
+ * Euler angles are only the storage format, never the axes of this edit. */
+export function crownRotationForEdit(reference: CrownReference, crown: Vec3, wholeRow: Vec3, row: "upper" | "lower", edit: CrownAngleEdit): Vec3 {
+  if (!Number.isFinite(edit.value) || (edit.angle === "edgeYaw"
+    ? Math.abs(edit.value) > 90
+    : edit.value < 0 || edit.value > 90 || !Number.isFinite(edit.leanSign) || Math.abs(edit.leanSign) !== 1)) {
+    throw new Error("Use a finite pitch or roll from 0–90°, or yaw from −90–90°.");
+  }
+  const rowMatrix = rotation(wholeRow), combined = rowMatrix.clone().multiply(rotation(crown));
+  const alongRow = new Vector3(1, 0, 0).transformDirection(rowMatrix); alongRow.y = 0;
+  if (alongRow.lengthSq() < 1e-12) throw new Error("The row is vertical. Use the whole-row gizmo to establish a horizontal jawline first.");
+  alongRow.normalize();
+  const normal = new Vector3(0, 1, 0), acrossRow = new Vector3().crossVectors(alongRow, normal);
+  let rotationAxis: Vector3, delta: number;
+  if (edit.angle === "edgeYaw") {
+    const edge = new Vector3(...reference.edge).transformDirection(combined);
+    if (Math.hypot(edge.x, edge.z) < 1e-8) throw new Error("The cutting edge is vertical; tilt the crown before setting its projected yaw.");
+    const current = Math.atan2(edge.dot(acrossRow), edge.dot(alongRow));
+    // The edge is an undirected chord. Take the shortest change modulo 180°.
+    delta = current - edit.value * Math.PI / 180;
+    delta -= Math.round(delta / Math.PI) * Math.PI;
+    rotationAxis = normal;
+  } else {
+    const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base));
+    if (axis.lengthSq() < 1e-12) throw new Error("A long axis could not be measured for this crown.");
+    axis.transformDirection(combined);
+    const horizontal = axis.dot(edit.angle === "pitch" ? alongRow : acrossRow);
+    if (Math.hypot(horizontal, axis.y) < 1e-8) throw new Error("The long axis has no projection in this view; adjust the other tilt or use the gizmo first.");
+    // Preserve the existing hemisphere, including intentionally inverted teeth.
+    // At exactly horizontal, use the row's normal direction toward occlusion.
+    const verticalSign = Math.abs(axis.y) > 1e-8 ? Math.sign(axis.y) : row === "upper" ? -1 : 1;
+    const target = edit.value * Math.PI / 180;
+    const desired = Math.atan2(verticalSign * Math.sin(target), edit.leanSign * Math.cos(target));
+    const current = Math.atan2(axis.y, horizontal);
+    delta = edit.angle === "pitch" ? desired - current : current - desired;
+    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+    rotationAxis = edit.angle === "pitch" ? acrossRow : alongRow;
+  }
+  const turn = new Matrix4().makeRotationFromQuaternion(new Quaternion().setFromAxisAngle(rotationAxis, delta));
+  const local = rowMatrix.clone().invert().multiply(turn).multiply(combined);
+  const euler = new Euler().setFromRotationMatrix(local, "ZYX");
+  return [euler.x, euler.y, euler.z].map(v => v * 180 / Math.PI) as Vec3;
+}
 
 /** Invert the anatomical readout into the existing rigid crown transform.
  * Two projected inclinations determine the long axis. The edge's projected

@@ -1,11 +1,109 @@
 import { describe, expect, it } from "vitest";
-import { BoxGeometry, Euler, Vector3 } from "three";
-import { crownRotationForAngles, estimateCrownReference, measureCrownInclination, type CrownReference } from "../src/wear/crownOrientation";
+import { BoxGeometry, Euler, Quaternion, Vector3 } from "three";
+import { crownRotationForAngles, crownRotationForEdit, estimateCrownReference, measureCrownInclination, type CrownReference } from "../src/wear/crownOrientation";
 import type { Vec3 } from "../src/wear/crownRows";
 
 const zero: Vec3 = [0, 0, 0];
 const lower: CrownReference = { base: [0, 0, 0], tip: [0, 10, 0], edge: [1, 0, 0] };
 const upper: CrownReference = { ...lower, tip: [0, -10, 0] };
+const quaternion = (degrees: Vec3) => new Quaternion().setFromEuler(new Euler(...degrees.map(v => v * Math.PI / 180) as Vec3, "ZYX"));
+
+describe("crown slider rotations", () => {
+  it("keeps S083 roll on the jawline axis all the way to zero and back", () => {
+    const reference: CrownReference = { base: [-1.6843474, 70.3649742, -.1440473], tip: [1.7140009, 35.0836151, -4.2815404], edge: [26.4339621, 0, 8.1166685] };
+    const start: Vec3 = [20, 3.054941840818941, 25];
+    const initial = measureCrownInclination(reference, start, zero, "upper")!;
+    let current = start;
+    for (const target of [50, 30, 10, 5, 4, 3, 2, 1, .1, 0, .1, 1, 5, 30, initial.roll!]) {
+      const before = measureCrownInclination(reference, current, zero, "upper")!;
+      const next = crownRotationForEdit(reference, current, zero, "upper", { angle: "roll", value: target, leanSign: -1 });
+      const delta = quaternion(next).multiply(quaternion(current).invert());
+      expect(delta.y).toBeCloseTo(0, 10); expect(delta.z).toBeCloseTo(0, 10);
+      expect(quaternion(current).angleTo(quaternion(next)) * 180 / Math.PI).toBeCloseTo(Math.abs(target - before.roll!), 7);
+      const after = measureCrownInclination(reference, next, zero, "upper")!;
+      expect(after.roll).toBeCloseTo(target, 9);
+      if (target === 5) expect(after.edgeYaw).not.toBeCloseTo(initial.edgeYaw!, 1);
+      current = next;
+    }
+    expect(quaternion(current).angleTo(quaternion(start))).toBeLessThan(1e-7);
+  });
+
+  it("uses the occlusal frame for both rows even when the whole row is tilted", () => {
+    for (const row of ["upper", "lower"] as const) for (const whole of [zero, [12, 31, -16] as Vec3]) for (const angle of ["pitch", "roll"] as const) {
+      const reference = row === "upper" ? upper : lower;
+      const start: Vec3 = [20, 3, 25];
+      const before = measureCrownInclination(reference, start, whole, row)!;
+      const target = before[angle]! - 10;
+      const leanSign = Math.sign(angle === "pitch" ? before.along : before.across);
+      const next = crownRotationForEdit(reference, start, whole, row, { angle, value: target, leanSign });
+      const after = measureCrownInclination(reference, next, whole, row)!;
+      expect(after[angle]).toBeCloseTo(target, 9);
+      const rowQ = quaternion(whole);
+      const worldBefore = rowQ.clone().multiply(quaternion(start)), worldAfter = rowQ.clone().multiply(quaternion(next));
+      const jawline = new Vector3(1, 0, 0).applyQuaternion(rowQ); jawline.y = 0; jawline.normalize();
+      const fixedAxis = angle === "roll" ? jawline : new Vector3().crossVectors(jawline, new Vector3(0, 1, 0));
+      // Every point on the selected world rotation axis stays fixed.
+      const delta = worldAfter.clone().multiply(worldBefore.clone().invert());
+      expect(fixedAxis.clone().applyQuaternion(delta).distanceTo(fixedAxis)).toBeLessThan(1e-10);
+      expect(worldBefore.angleTo(worldAfter) * 180 / Math.PI).toBeCloseTo(10, 8);
+    }
+  });
+
+  it("can leave a horizontal pose even when the other tilt projection is undefined", () => {
+    for (const row of ["upper", "lower"] as const) {
+      const reference = row === "upper" ? upper : lower;
+      const horizontal = crownRotationForEdit(reference, zero, zero, row, { angle: "roll", value: 0, leanSign: 1 });
+      const flat = measureCrownInclination(reference, horizontal, zero, row)!;
+      expect(flat.roll).toBeCloseTo(0, 9); expect(flat.pitch).toBeNull();
+      const raised = crownRotationForEdit(reference, horizontal, zero, row, { angle: "roll", value: 30, leanSign: 1 });
+      const result = measureCrownInclination(reference, raised, zero, row)!;
+      expect(result.roll).toBeCloseTo(30, 9); expect(result.pitch).toBeCloseTo(90, 9);
+      expect(result.towardOcclusion).toBe(true);
+    }
+  });
+
+  it("changes yaw about the plane normal without changing 3D inclination or flipping at the wrap", () => {
+    let current: Vec3 = [20, 15, -25];
+    const whole: Vec3 = [13, 27, 9];
+    const inclination = measureCrownInclination(lower, current, whole, "lower")!.inclination;
+    for (const yaw of [85, 89, 90, -89, -85]) {
+      const before = measureCrownInclination(lower, current, whole, "lower")!;
+      const next = crownRotationForEdit(lower, current, whole, "lower", { angle: "edgeYaw", value: yaw });
+      const after = measureCrownInclination(lower, next, whole, "lower")!;
+      expect(((after.edgeYaw! - yaw + 270) % 180) - 90).toBeCloseTo(0, 9);
+      expect(after.inclination).toBeCloseTo(inclination, 9);
+      const worldBefore = quaternion(whole).multiply(quaternion(current)), worldAfter = quaternion(whole).multiply(quaternion(next));
+      const delta = worldAfter.multiply(worldBefore.invert());
+      expect(delta.x).toBeCloseTo(0, 10); expect(delta.z).toBeCloseTo(0, 10);
+      const expected = Math.abs(((yaw - before.edgeYaw! + 270) % 180) - 90);
+      expect(quaternion(current).angleTo(quaternion(next)) * 180 / Math.PI).toBeCloseTo(expected, 7);
+      current = next;
+    }
+  });
+
+  it("changes lean direction without adding a twist and preserves an inverted hemisphere", () => {
+    for (const row of ["upper", "lower"] as const) for (const angle of ["pitch", "roll"] as const) {
+      const reference = row === "upper" ? upper : lower;
+      const start: Vec3 = [160, 3, 25];
+      const before = measureCrownInclination(reference, start, zero, row)!;
+      const sign = Math.sign(angle === "pitch" ? before.along : before.across);
+      const next = crownRotationForEdit(reference, start, zero, row, { angle, value: 40, leanSign: -sign });
+      const after = measureCrownInclination(reference, next, zero, row)!;
+      expect(after[angle]).toBeCloseTo(40, 9);
+      expect(Math.sign(angle === "pitch" ? after.along : after.across)).toBe(-sign);
+      expect(Math.sign(after.vertical)).toBe(Math.sign(before.vertical));
+    }
+  });
+
+  it("rejects undefined projections and invalid edits without changing the original pose", () => {
+    expect(() => crownRotationForEdit(lower, [0, 0, 90], zero, "lower", { angle: "edgeYaw", value: 13 })).toThrow("cutting edge is vertical");
+    expect(() => crownRotationForEdit(lower, [90, 0, 0], zero, "lower", { angle: "pitch", value: 60, leanSign: 1 })).toThrow("no projection");
+    expect(() => crownRotationForEdit(lower, zero, zero, "lower", { angle: "roll", value: NaN, leanSign: 1 })).toThrow("finite");
+    expect(() => crownRotationForEdit(lower, zero, zero, "lower", { angle: "roll", value: -1, leanSign: 1 })).toThrow("finite");
+    expect(() => crownRotationForEdit(lower, zero, [0, 0, 90], "lower", { angle: "roll", value: 30, leanSign: 1 })).toThrow("row is vertical");
+    expect(zero).toEqual([0, 0, 0]);
+  });
+});
 
 describe("crown angles to the occlusal plane", () => {
   it("reports upright upper and lower crowns as 90 degrees, independent of tip direction", () => {

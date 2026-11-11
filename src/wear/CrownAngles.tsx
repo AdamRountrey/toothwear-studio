@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { CrownAngleTarget, CrownInclination } from "./crownOrientation";
+import type { CrownAngleEdit, CrownInclination } from "./crownOrientation";
 
 const angle = (n: number | null) => n === null ? "—" : `${n.toFixed(1)}°`;
 
@@ -19,7 +19,7 @@ function Projection({ name, subtitle, value, horizontal, vertical, axis }: { nam
   </div>;
 }
 
-export function CrownAngles({ value, row, disabled, onChange }: { value: CrownInclination | null; row: string; disabled: boolean; onChange: (target: CrownAngleTarget) => string | null }) {
+export function CrownAngles({ value, row, disabled, onChange }: { value: CrownInclination | null; row: string; disabled: boolean; onChange: (edit: CrownAngleEdit) => string | null }) {
   const [alongSign, setAlongSign] = useState(value && value.along < 0 ? -1 : 1);
   const [acrossSign, setAcrossSign] = useState(value && value.across < 0 ? -1 : 1);
   const [controlError, setControlError] = useState<string | null>(null);
@@ -28,10 +28,9 @@ export function CrownAngles({ value, row, disabled, onChange }: { value: CrownIn
     if (value && Math.abs(value.across) > 1e-8) setAcrossSign(value.across < 0 ? -1 : 1);
     setControlError(null);
   }, [value]);
-  const controlsReady = value?.pitch !== null && value?.roll !== null && value?.edgeYaw !== null && value !== null;
-  const change = (patch: Partial<CrownAngleTarget>) => {
-    if (!controlsReady || !value || disabled) return "Controls unavailable";
-    const error = onChange({ pitch: value.pitch!, roll: value.roll!, edgeYaw: value.edgeYaw!, alongSign, acrossSign, ...patch });
+  const change = (edit: CrownAngleEdit) => {
+    if (!value || disabled) return "Controls unavailable";
+    const error = onChange(edit);
     setControlError(error);
     return error;
   };
@@ -46,22 +45,22 @@ export function CrownAngles({ value, row, disabled, onChange }: { value: CrownIn
       <div className="wear-angle-controls" role="group" aria-label={`${row} linked crown rotation controls`}>
         <p>Rotate each {row.toLowerCase()} crown</p>
         <label><span>Pitch · along row <strong>{angle(value.pitch)}</strong></span>
-          <input aria-label={`${row} crown pitch angle`} type="range" min="1" max="90" step="0.1" value={value.pitch ?? 90} disabled={disabled || !controlsReady} onChange={event => change({ pitch: Number(event.target.value) })} />
+          <input aria-label={`${row} crown pitch angle`} type="range" min="0" max="90" step="0.1" value={value.pitch ?? 90} disabled={disabled || value.pitch === null} onChange={event => change({ angle: "pitch", value: Number(event.target.value), leanSign: alongSign })} />
         </label>
-        <select aria-label={`${row} pitch lean direction`} value={alongSign} disabled={disabled || !controlsReady} onChange={event => { const sign = Number(event.target.value); if (!change({ alongSign: sign })) setAlongSign(sign); }}>
+        <select aria-label={`${row} pitch lean direction`} value={alongSign} disabled={disabled || value.pitch === null} onChange={event => { const sign = Number(event.target.value); if (!change({ angle: "pitch", value: value.pitch!, leanSign: sign })) setAlongSign(sign); }}>
           <option value={1}>Tip toward +row</option><option value={-1}>Tip toward −row</option>
         </select>
         <label><span>Roll · across row <strong>{angle(value.roll)}</strong></span>
-          <input aria-label={`${row} crown roll angle`} type="range" min="1" max="90" step="0.1" value={value.roll ?? 90} disabled={disabled || !controlsReady} onChange={event => change({ roll: Number(event.target.value) })} />
+          <input aria-label={`${row} crown roll angle`} type="range" min="0" max="90" step="0.1" value={value.roll ?? 90} disabled={disabled || value.roll === null} onChange={event => change({ angle: "roll", value: Number(event.target.value), leanSign: acrossSign })} />
         </label>
-        <select aria-label={`${row} roll lean direction`} value={acrossSign} disabled={disabled || !controlsReady} onChange={event => { const sign = Number(event.target.value); if (!change({ acrossSign: sign })) setAcrossSign(sign); }}>
+        <select aria-label={`${row} roll lean direction`} value={acrossSign} disabled={disabled || value.roll === null} onChange={event => { const sign = Number(event.target.value); if (!change({ angle: "roll", value: value.roll!, leanSign: sign })) setAcrossSign(sign); }}>
           <option value={1}>Tip toward +across</option><option value={-1}>Tip toward −across</option>
         </select>
         <label><span>Yaw · estimated edge <strong>{angle(value.edgeYaw)}</strong></span>
-          <input aria-label={`${row} crown yaw angle`} type="range" min="-90" max="90" step="0.1" value={value.edgeYaw ?? 0} disabled={disabled || !controlsReady} onChange={event => change({ edgeYaw: Number(event.target.value) })} />
+          <input aria-label={`${row} crown yaw angle`} type="range" min="-90" max="90" step="0.1" value={value.edgeYaw ?? 0} disabled={disabled || value.edgeYaw === null} onChange={event => change({ angle: "edgeYaw", value: Number(event.target.value) })} />
         </label>
-        <p className="wear-note">All six crowns rotate about their own centers. Each slider holds the other two angles fixed. Yaw 0° aligns the estimated cutting edge with the jawline. Whole-row positioning uses the gizmo.</p>
-        <p className="wear-note">Pitch and roll: 1–90°. Use the gizmo for horizontal or inverted poses. Prepare the wear grid after editing.</p>
+        <p className="wear-note">All six crowns rotate about their own centers. Roll turns about the jawline; pitch about the across-row axis; yaw about the occlusal-plane normal. The other measured angles update naturally.</p>
+        <p className="wear-note">Pitch and roll: 0–90°. Yaw 0° aligns the estimated cutting edge with the jawline. A missing projection disables only that control. Prepare the wear grid after editing.</p>
         {controlError && <p className="wear-warning" role="alert">{controlError}</p>}
       </div>
       {!value.towardOcclusion && <p className="wear-warning">This crown points away from the opposing row.</p>}
