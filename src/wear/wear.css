@@ -1,7 +1,8 @@
 :root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#24343e;background:#eef2f4;font-synthesis:none;text-rendering:optimizeLegibility;font-smooth:always}
-.wear-tooth-axis-key{position:absolute;left:22px;bottom:112px;max-width:calc(100% - 44px);display:flex;flex-direction:column;gap:4px;padding:9px 11px;border:1px solid #49606b;border-radius:5px;background:#13212be8;color:#b9cbd4;font-size:10px;line-height:1.5;pointer-events:none}
+.wear-tooth-axis-key{position:absolute;left:22px;bottom:54px;max-width:calc(100% - 44px);display:flex;flex-direction:column;gap:4px;padding:9px 11px;border:1px solid #49606b;border-radius:5px;background:#13212be8;color:#b9cbd4;font-size:10px;line-height:1.5}
+.wear-tooth-axis-key summary{cursor:pointer}.wear-tooth-axis-key details span{display:block;margin-top:4px}.wear-stage:has(.wear-tooth-axis-key) .wear-legend{display:none}
 .wear-tooth-axis-key strong{color:#e2edf2;font-size:11px;font-weight:550}.wear-tooth-axis-key b{font-weight:750}.axis-x{color:#ff7979}.axis-y{color:#89e6a5}.axis-z{color:#83b8ff}.axis-long{color:#ffd45c}.axis-edge{color:#f59bee}
-@media(max-width:600px){.wear-tooth-axis-key{left:12px;bottom:128px;font-size:9px;max-width:calc(100% - 24px)}}
+@media(max-width:600px){.wear-tooth-axis-key{left:12px;bottom:48px;font-size:9px;max-width:calc(100% - 24px)}}
 .wear-rail [hidden]{display:none!important}
 .wear-panel-nav{position:sticky;top:0;z-index:3;display:flex;gap:4px;padding:12px;background:#f9fbfc;border-bottom:1px solid #d6e0e4;grid-column:1/-1}
 .wear-panel-nav button{display:flex;align-items:center;justify-content:center;gap:5px;flex:1;border:1px solid transparent;border-radius:5px;padding:9px 5px;background:transparent;color:#637d89;font:inherit;font-size:11px;white-space:nowrap}

@@ -627,13 +627,15 @@ export function WearApp() {
             <button aria-label={setupTarget === "hinge" ? "Rotate jaw hinge" : eachCrownTarget ? `Rotate each ${selectedRow} crown` : `Rotate ${selectedRow} teeth`} aria-pressed={activeSetupMode === "rotate"} className={activeSetupMode === "rotate" ? "selected" : ""} disabled={poseLocked} onClick={() => editSetup("rotate")}><Rotate3d size={14} />{eachCrownTarget ? "Rotate each" : "Rotate"}</button>
             <button aria-label="Finish positioning" disabled={poseLocked || activeSetupMode === null} onClick={stopSetupTools}><Check size={14} /> Done</button>
           </div>}
-          {crownRows && !setupStarted && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
+          {crownRows && !setupStarted && !showToothAxes && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
           {showToothAxes && <div className="wear-tooth-axis-key" role="note" aria-label="Tooth axis marker legend">
             <strong>{selectedRow === "upper" ? "Upper" : "Lower"} tooth {selectedCrowns[selectedRowIndex] + 1} · tooth-local directions</strong>
             <span><b className="axis-x">X</b> <b className="axis-y">Y</b> <b className="axis-z">Z</b> source axes · <b className="axis-long">L</b> long axis · <b className="axis-edge">E</b> edge estimate</span>
-            <span>Arrows rotate with the tooth. Gray plane keeps world XZ orientation.</span>
-            <span>Rings use local X/Y/Z; sliders use occlusal-frame axes.</span>
-            <span>Plane position is a visual guide, not a contact surface.</span>
+            <details><summary>Reference frames · gray plane stays fixed in orientation</summary>
+              <span>Arrows rotate with the tooth. Gray plane keeps world XZ orientation.</span>
+              <span>Rings use local X/Y/Z; sliders use occlusal-frame axes.</span>
+              <span>Plane position is a visual guide, not a contact surface.</span>
+            </details>
           </div>}
           {isCycles && original && <div className="wear-cycle-preview"><label><span>Opening preview <strong>{format(hingePreview * cycleSettings.openingAngle, 1)}°</strong></span><input aria-label="Jaw opening preview" type="range" min={0} max={1} step={0.01} value={hingePreview} disabled={locked || !Number.isFinite(cycleSettings.openingAngle)} onChange={event => { setHingePreview(Number(event.target.value)); stopSetupTools(); }} /></label><span>{hingePreview > 0 ? "Preview only · run and export return to closed pose" : "Closed reference pose · all teeth share this endpoint"}</span></div>}
           {!original && <div className="wear-empty"><div className="wear-empty-icon"><Layers3 size={42} strokeWidth={1} /></div><span className="wear-eyebrow">FROM UNWORN TO OCCLUDED</span><h2>Let the contact<br />shape the teeth.</h2><p>Bring your aligned toothrows together along Y.<br />Wear develops wherever the two surfaces meet.</p><button className="wear-primary" disabled={locked} onClick={loadCrowns}><Layers3 size={16} /> Build 6 × 6 crown rows <ChevronRight size={16} /></button><button className="wear-text-button" disabled={locked} onClick={() => load(true)}><Upload size={14} /> Load example toothrows</button><small>Two example PLY files · 96 MB download</small></div>}
