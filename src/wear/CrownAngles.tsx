@@ -57,7 +57,7 @@ export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { valu
           <option value={1}>Tip toward +across</option><option value={-1}>Tip toward −across</option>
         </select>
         <p className="wear-note">All six crowns rotate about their own centers. Roll tilts the long axis across the row; pitch tilts it along the row. Both preserve axial yaw. These two projected inclinations can affect each other.</p>
-        <p className="wear-note">Pitch and roll: 0–90°. A missing projection disables only that control. Prepare the wear grid after editing.</p>
+        <p className="wear-note">Pitch and roll: 0–90°. Editing a slider selects its matching ring above the model. A missing projection disables only that control. Prepare the wear grid after editing.</p>
         {controlError && <p className="wear-warning" role="alert">{controlError}</p>}
       </div>
       {!value.towardOcclusion && <p className="wear-warning">This crown points away from the opposing row.</p>}
@@ -73,7 +73,7 @@ export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { valu
       <label><span>Yaw · spin about tooth long axis <strong>{angle(axialYaw)}</strong></span>
         <input aria-label={`${row} crown yaw angle`} type="range" min="-180" max="180" step="0.1" value={axialYaw ?? 0} disabled={disabled || axialYaw === null} onChange={event => change({ angle: "yaw", value: Number(event.target.value) })} />
       </label>
-      <p className="wear-note">Spins about the gold L arrow. Pitch, roll and true inclination stay unchanged. Yaw uses the original crown as its zero-twist reference; it is independent of the occlusal plane and whole-row placement.</p>
+      <p className="wear-note">The yaw slider and yaw ring spin about the gold L arrow. Pitch, roll and true inclination stay unchanged. Yaw uses the original crown as its zero-twist reference; it is independent of the occlusal plane and whole-row placement.</p>
       {value && <p className="wear-note">Separate edge heading along jaw: <strong>{angle(value.edgeYaw)}</strong></p>}
       {controlError && !value && <p className="wear-warning" role="alert">{controlError}</p>}
     </div>

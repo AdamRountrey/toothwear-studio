@@ -13,6 +13,7 @@ import s128Preset from "./presets/s128.json";
 import y13S083Preset from "./presets/y13S083.json";
 import { crownRotationForEdit, estimateCrownReference, measureCrownInclination, measureCrownAxialYaw, type CrownAngleEdit } from "./crownOrientation";
 import { CrownAngles } from "./CrownAngles";
+import { crownGizmoAxis, type CrownGizmoMode } from "./crownGizmo";
 import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
 
 type Row = "upper" | "lower";
@@ -58,6 +59,7 @@ export function WearApp() {
   const validCrownSpacing = !sourceCrownRows || validCrownPitch && currentCrownCheck?.clear === true;
   const [selectedCrowns, setSelectedCrowns] = useState<[number, number]>([2, 2]);
   const [crownEditing, setCrownEditing] = useState(false);
+  const [crownGizmoMode, setCrownGizmoMode] = useState<CrownGizmoMode>("yaw");
   const [importKind, setImportKind] = useState<"rows" | "crowns">("rows");
   const [mode, setMode] = useState<"geometric" | "cycles">("geometric");
   const [jawMotion, setJawMotion] = useState<JawMotion>("closing");
@@ -172,6 +174,8 @@ export function WearApp() {
     : Number.isFinite(target) && depth > 0 && Number.isFinite(step) && step > 0 && (!vegetationEnabled || validVegetation);
   const locked = busy || running || workerFailed || computeSwitching;
   const toothAxisReference = crownReferences?.[selectedRowIndex];
+  const namedCrownRingAvailable = !!toothAxisReference && (crownGizmoMode === "free" || !!crownGizmoAxis(toothAxisReference,
+    crownRotations[selectedRowIndex], selectedPose.rotation, selectedRow, crownGizmoMode));
   const showToothAxes = !!crownRows && !!toothAxisReference && !locked && !surfaces && setupTarget !== "hinge" && activeSetupMode === "rotate";
   const vegetationStarted = (snapshot?.vegetation.pullDistance ?? 0) > 0;
   const vegetationLocked = locked || vegetationStarted || isCycles || chipThickness > 0;
@@ -440,7 +444,7 @@ export function WearApp() {
     if (!reference) return "A long axis could not be measured for this crown.";
     try {
       const rotation = crownRotationForEdit(reference, crownRotations[index], row === "upper" ? upperPose.rotation : lowerPose.rotation, row, edit);
-      stopSetupTools(); setSetupTarget(`${row}-crown`); setCrownEditing(true);
+      stopSetupTools(); setSetupTarget(`${row}-crown`); setCrownEditing(true); setCrownGizmoMode(edit.angle);
       changeCrownRotation(row, rotation);
       return null;
     } catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
@@ -601,9 +605,9 @@ export function WearApp() {
             lowerPose={lowerPose} lowerPivot={lowerPivot} lowerPoseBaked={!!surfaces}
             lowerPoseMode={lowerPoseMode} lowerPoseEditable={!poseLocked} onLowerPoseChange={changeLowerPose}
             crownArrays={crownArrays}
-            crownEdit={crownEditing && crownRows && eachCrownTarget ? { row: selectedRow, index: selectedCrowns[selectedRowIndex], rotation: crownRotations[selectedRowIndex] } : undefined}
+            crownEdit={crownEditing && crownRows && eachCrownTarget ? { row: selectedRow, index: selectedCrowns[selectedRowIndex], rotation: crownRotations[selectedRowIndex], mode: toothAxisReference ? crownGizmoMode : "free", reference: toothAxisReference ?? undefined } : undefined}
             toothAxes={showToothAxes && toothAxisReference ? { row: selectedRow, index: selectedCrowns[selectedRowIndex], reference: toothAxisReference } : undefined}
-            onCrownSelect={selectCrown} onCrownRotationChange={changeCrownRotation}
+            onCrownSelect={selectCrown} onCrownRotationChange={changeCrownRotation} onCrownRotationError={setError}
             hinge={isCycles ? { origin: cycleSettings.hingeOrigin, axis: cycleSettings.hingeAxis, visible: showHinge } : undefined}
             hingeMode={hingeMode} hingeEditable={isCycles && !poseLocked}
             onHingeChange={(origin, axis) => { if (!poseLocked) { setCycleSettings(current => ({ ...current, hingeOrigin: origin, hingeAxis: axis })); setHingePreset("custom"); } }}
@@ -623,17 +627,25 @@ export function WearApp() {
               {isCycles && <option value="hinge">Jaw hinge</option>}
             </select>
             {eachCrownTarget && crownRows && <select aria-label="Crown carrying rotation gizmo" disabled={poseLocked} value={selectedCrowns[selectedRowIndex]} onChange={event => selectCrown(selectedRow, Number(event.target.value))}>{crownRows[selectedRowIndex].centers.map((_, i) => <option key={i} value={i}>Tooth {i + 1} of 6</option>)}</select>}
+            {eachCrownTarget && crownRows && <select aria-label="Crown rotation ring" disabled={poseLocked} value={toothAxisReference ? crownGizmoMode : "free"} onChange={event => { setCrownGizmoMode(event.target.value as CrownGizmoMode); editSetup("rotate"); }}>
+              <option value="pitch" disabled={!toothAxisReference}>Pitch · along row</option>
+              <option value="roll" disabled={!toothAxisReference}>Roll · across row</option>
+              <option value="yaw" disabled={!toothAxisReference}>Yaw · long axis</option>
+              <option value="free">Free X/Y/Z</option>
+            </select>}
             {!eachCrownTarget && <button aria-label={setupTarget === "hinge" ? "Move jaw hinge" : `Move ${selectedRow} teeth`} aria-pressed={activeSetupMode === "translate"} className={activeSetupMode === "translate" ? "selected" : ""} disabled={poseLocked} onClick={() => editSetup("translate")}><Move3d size={14} /> Move</button>}
             <button aria-label={setupTarget === "hinge" ? "Rotate jaw hinge" : eachCrownTarget ? `Rotate each ${selectedRow} crown` : `Rotate ${selectedRow} teeth`} aria-pressed={activeSetupMode === "rotate"} className={activeSetupMode === "rotate" ? "selected" : ""} disabled={poseLocked} onClick={() => editSetup("rotate")}><Rotate3d size={14} />{eachCrownTarget ? "Rotate each" : "Rotate"}</button>
             <button aria-label="Finish positioning" disabled={poseLocked || activeSetupMode === null} onClick={stopSetupTools}><Check size={14} /> Done</button>
           </div>}
-          {crownRows && !setupStarted && !showToothAxes && <div className="wear-crown-hint">{eachCrownTarget ? "Drag a ring: all six crowns tilt at their own centers. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
+          {crownRows && !setupStarted && !showToothAxes && <div className="wear-crown-hint">{eachCrownTarget ? "Choose Pitch, Roll, or Yaw, then drag its ring. Click a crown to move the handle." : "Whole row moves the crowns and base together. Choose Each crown to change tooth tilt."}</div>}
           {showToothAxes && <div className="wear-tooth-axis-key" role="note" aria-label="Tooth axis marker legend">
             <strong>{selectedRow === "upper" ? "Upper" : "Lower"} tooth {selectedCrowns[selectedRowIndex] + 1} · tooth-local directions</strong>
+            {eachCrownTarget && <span>{!namedCrownRingAvailable ? "Ring unavailable at this pose · choose another angle or Free X/Y/Z" : crownGizmoMode === "free" ? "Free X/Y/Z rings · all angle readings may change" : `${crownGizmoMode[0].toUpperCase()}${crownGizmoMode.slice(1)} ring · same motion as its slider`}</span>}
             <span><b className="axis-x">X</b> <b className="axis-y">Y</b> <b className="axis-z">Z</b> source axes · <b className="axis-long">L</b> long axis / yaw · <b className="axis-edge">E</b> edge estimate</span>
             <details><summary>Reference frames · gray plane stays fixed in orientation</summary>
               <span>Arrows rotate with the tooth. Gray plane keeps world XZ orientation.</span>
-              <span>Rings use local X/Y/Z. Pitch/roll use the jaw frame; yaw spins about L.</span>
+              <span>Named crown rings match the sliders. Source X/Y/Z arrows describe the mesh; they are the rotation axes only in Free X/Y/Z mode.</span>
+              <span>Pitch/roll tilt the long axis and preserve yaw. The yaw ring spins about L and preserves both tilts.</span>
               <span>Plane position is a visual guide, not a contact surface.</span>
             </details>
           </div>}
@@ -676,7 +688,7 @@ export function WearApp() {
                 : <button className="wear-text-button" disabled={!selectedPose.translation.some(v => v !== 0) && !selectedPose.rotation.some(v => v !== 0)} onClick={() => changeRowPose(selectedRow, identityUpperSetupPose())}><RotateCcw size={12} /> Restore source pose</button>}
               <details className="wear-import"><summary>Restore setup pose from run JSON</summary><div><label>Run settings JSON<input aria-label="Restore setup pose from run JSON" type="file" accept=".json,application/json" disabled={poseLocked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreSetup(file); }} /></label><p className="wear-note">Restores both row poses and linked crown tilts. Load the same original files and row type first. Worn material and other run settings are not restored.</p></div></details>
             </fieldset>
-            <p className="wear-note">Preview changes live, then prepare the grid. Whole-row controls move the base and all teeth together about the row center. Crown controls rotate each tooth about its own center using row-local axes.</p>
+            <p className="wear-note">Preview changes live, then prepare the grid. Whole-row controls move the base and all teeth together about the row center. Named crown rings match the pitch, roll, and axial-yaw sliders; Free X/Y/Z uses the original mesh axes.</p>
             {crownRows && <div className="wear-crown-spacing">
               <NumberField label="Tooth spacing" value={crownPitch} min={0.001} max={1e6} step="any" suffix={unit} disabled={poseLocked} onChange={changeCrownPitch} />
               <p className="wear-note">Center-to-center distance along each row. Both rows use the same spacing and retain their half-tooth stagger; bases expand with the rows.</p>

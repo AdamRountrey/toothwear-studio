@@ -45,6 +45,7 @@ import type { VegetationDirection } from "./engine";
 import type { VegetationTrace } from "./slidingVegetation";
 import { createUpperSetupMatrix, type UpperSetupPose } from "./upperPose";
 import type { CrownReference } from "./crownOrientation";
+import { crownGizmoAxis, crownRotationForGizmoDrag, type CrownGizmoMode } from "./crownGizmo";
 import { createToothAxisGuide, updateToothAxisGuide, type ToothAxisGuide } from "./toothAxisGuide";
 
 export type WearMesh = {
@@ -84,11 +85,12 @@ export type WearViewportProps = {
   lowerPoseEditable?: boolean;
   onLowerPoseChange?: (pose: UpperSetupPose) => void;
   crownArrays?: { upper: CrownArrayPreview; lower: CrownArrayPreview };
-  /** Rotate one representative crown about its own pivot, in its row's local frame. */
-  crownEdit?: { row: ToothRow; index: number; rotation: [number, number, number] };
+  /** Named rings share the slider rules; free mode uses the source-local axes. */
+  crownEdit?: { row: ToothRow; index: number; rotation: [number, number, number]; mode: CrownGizmoMode; reference?: CrownReference };
   toothAxes?: { row: ToothRow; index: number; reference: CrownReference };
   onCrownSelect?: (row: ToothRow, index: number) => void;
   onCrownRotationChange?: (row: ToothRow, rotation: [number, number, number]) => void;
+  onCrownRotationError?: (message: string) => void;
   hinge?: { origin: [number, number, number]; axis: [number, number, number]; visible: boolean };
   hingeMode?: "translate" | "rotate" | null;
   hingeEditable?: boolean;
@@ -127,7 +129,8 @@ type ViewportState = {
   scene: Scene;
   camera: PerspectiveCamera;
   controls: OrbitControls;
-  upperGizmo: { controls: TransformControls; pivot: Group; scene: Scene; pointerId: number | null; target: GizmoTarget };
+  upperGizmo: { controls: TransformControls; pivot: Group; scene: Scene; pointerId: number | null; target: GizmoTarget; crownMode?: CrownGizmoMode;
+    crownDrag?: { row: ToothRow; index: number; rotation: [number, number, number]; wholeRow: [number, number, number]; mode: Exclude<CrownGizmoMode, "free">; reference: CrownReference; frame: Quaternion } };
   hingeGuide: { group: Group; arrows: ArrowHelper[]; center: Mesh<SphereGeometry, MeshBasicMaterial> };
   renderer: WebGLRenderer;
   grid: GridHelper;
@@ -348,6 +351,20 @@ export function WearViewport(props: WearViewportProps) {
       if (!editable) return;
       if (state.upperGizmo.target.endsWith("-crown")) {
         if (current.crownEdit?.row !== row || !current.onCrownRotationChange) return;
+        if (current.crownEdit.mode !== "free") {
+          const drag = state.upperGizmo.crownDrag;
+          if (!drag || drag.row !== row || drag.index !== current.crownEdit.index || drag.mode !== current.crownEdit.mode) return;
+          try {
+            // r171 defines rotationAngle dynamically; its declaration file omits it.
+            const delta = (upperTransform as TransformControls & { rotationAngle: number }).rotationAngle;
+            // This proxy represents the control frame, not the crown pose. Keep
+            // its normal fixed during a named-axis drag, including face-on views.
+            upperPivot.quaternion.copy(drag.frame);
+            current.onCrownRotationChange(row, crownRotationForGizmoDrag(drag.reference, drag.rotation, drag.wholeRow, row, drag.mode, delta));
+          } catch (cause) { current.onCrownRotationError?.(cause instanceof Error ? cause.message : String(cause)); }
+          invalidate();
+          return;
+        }
         // The handle is in world space; the same local crown rotation is
         // applied at each of the six fixed pivots, after undoing the row pose.
         const rowQuaternion = getRowQuaternion(current, row);
@@ -373,6 +390,11 @@ export function WearViewport(props: WearViewportProps) {
     const onGizmoDragging = (event: { value: unknown }) => {
       controls.enabled = !event.value;
       if (event.value && pointerStart) pointerStart.gizmo = true;
+      const current = propsRef.current, crown = current.crownEdit;
+      state.upperGizmo.crownDrag = event.value && state.upperGizmo.target.endsWith("-crown") && crown && crown.mode !== "free" && crown.reference
+        ? { row: crown.row, index: crown.index, rotation: [...crown.rotation],
+          wholeRow: [...((crown.row === "upper" ? current.upperPose?.rotation : current.lowerPose?.rotation) ?? [0, 0, 0])], mode: crown.mode, reference: crown.reference, frame: upperPivot.quaternion.clone() }
+        : undefined;
       invalidate();
     };
     const rememberGizmoPointer = (event: PointerEvent) => {
@@ -795,18 +817,28 @@ function syncUpperPoseGizmo(state: ViewportState, props: WearViewportProps) {
   const target: GizmoTarget = hinge ? "hinge" : crownActive ? `${crownRow}-crown` : lowerActive ? "lower" : "upper";
   const active = hinge && !!state.surfaces.upper || crownActive || lowerActive || upperActive;
   const mode = hinge ? props.hingeMode : crownActive ? "rotate" : lowerActive ? props.lowerPoseMode : props.upperPoseMode;
-  if (!active) {
+  const crownMode = crownActive && !hinge ? crown?.mode : undefined;
+  const namedRing = crownMode !== undefined && crown && crownMode !== "free";
+  const ringAxis = namedRing && crown.reference ? crownGizmoAxis(crown.reference, crown.rotation,
+    (crownRow === "upper" ? props.upperPose?.rotation : props.lowerPose?.rotation) ?? [0, 0, 0], crownRow, crown.mode as Exclude<CrownGizmoMode, "free">) : null;
+  if (!active || namedRing && !ringAxis) {
     finishUpperPoseDrag(state);
     gizmo.controls.enabled = false;
     gizmo.controls.detach();
     return;
   }
-  if (gizmo.controls.mode !== mode || gizmo.target !== target) {
+  if (gizmo.controls.mode !== mode || gizmo.target !== target || gizmo.crownMode !== crownMode || gizmo.crownDrag && gizmo.crownDrag.index !== crown?.index) {
     finishUpperPoseDrag(state);
     gizmo.controls.setMode(mode!);
     gizmo.target = target;
+    gizmo.crownMode = crownMode;
   }
   gizmo.controls.setSpace(target.endsWith("-crown") ? "local" : "world");
+  // Pitch/roll axes live in the jaw plane; yaw follows the tilted tooth. They
+  // need not be orthogonal, so expose one correctly aligned named ring at a time.
+  gizmo.controls.showX = !namedRing;
+  gizmo.controls.showY = !namedRing;
+  gizmo.controls.showZ = true;
   // React receives every objectChange. Never feed that pose back into the
   // active drag: doing so changes the drag origin and can jump Euler angles.
   if (!gizmo.controls.dragging) {
@@ -818,8 +850,11 @@ function syncUpperPoseGizmo(state: ViewportState, props: WearViewportProps) {
       // In setup mode offsets are normally zero, but keep the handle aligned
       // with the visible crown if a caller displays a translated source.
       gizmo.pivot.position.y += crownRow === "upper" ? props.upperOffsetY : props.lowerOffsetY ?? 0;
-      const [rx, ry, rz] = crown.rotation.map(angle => angle % 360 * Math.PI / 180);
-      gizmo.pivot.quaternion.copy(getRowQuaternion(props, crownRow)).multiply(new Quaternion().setFromEuler(new Euler(rx, ry, rz, "ZYX")));
+      if (ringAxis) gizmo.pivot.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), ringAxis);
+      else {
+        const [rx, ry, rz] = crown.rotation.map(angle => angle % 360 * Math.PI / 180);
+        gizmo.pivot.quaternion.copy(getRowQuaternion(props, crownRow)).multiply(new Quaternion().setFromEuler(new Euler(rx, ry, rz, "ZYX")));
+      }
     } else {
       const row = lowerActive ? "lower" : "upper";
       const pivot = getRowSourcePivot(state, props, row);
