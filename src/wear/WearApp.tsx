@@ -14,6 +14,7 @@ import y13S083Preset from "./presets/y13S083.json";
 import { crownRotationForEdit, estimateCrownReference, measureCrownInclination, measureCrownAxialYaw, type CrownAngleEdit } from "./crownOrientation";
 import { CrownAngles } from "./CrownAngles";
 import { crownGizmoAxis, type CrownGizmoMode } from "./crownGizmo";
+import { matchCrownRowAngles } from "./linkedCrownAngles";
 import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
 
 type Row = "upper" | "lower";
@@ -51,6 +52,9 @@ export function WearApp() {
   const validCrownPitch = Number.isFinite(crownPitch) && crownPitch > 0 && crownPitch <= 1e6;
   const crownRows = useMemo(() => sourceCrownRows ? spaceCrownRows(sourceCrownRows, validCrownPitch ? crownPitch : crownRowPitch(sourceCrownRows[0])) : null, [sourceCrownRows, crownPitch, validCrownPitch]);
   const [crownRotations, setCrownRotations] = useState<[Rotation, Rotation]>(identityCrownRotations);
+  const [linkCrownAngles, setLinkCrownAngles] = useState(false);
+  const preparedAngleLink = useRef(false);
+  const pendingAngleLink = useRef<boolean | null>(null);
   const crownCheckKey = JSON.stringify([crownPitch, crownRotations]);
   const crownCheckRequest = useRef({ id: 0, key: "" });
   const [crownCheck, setCrownCheck] = useState<{ key: string; result: CrownSpacingCheck } | null>(null);
@@ -215,6 +219,7 @@ export function WearApp() {
       : presetId === "s128" ? s128Preset : presetId === "y13-s083" ? y13S083Preset : null;
     let presetPending = !!launchPreset;
     const fail = (message: string) => {
+      pendingAngleLink.current = null;
       run.current = false; manualPullPending.current = false; setRunning(false); setBusy(false); setComputeSwitching(false); setError(message); setStatus("Check the setup and try again.");
     };
     instance.onerror = event => {
@@ -251,6 +256,7 @@ export function WearApp() {
         setUpperPoseMode("translate");
         setLowerPose(identityUpperSetupPose()); setLowerPoseMode(null);
         setCrownRows(message.crownRows ?? null); setCrownRotations(identityCrownRotations()); setCrownEditing(false); setSelectedCrowns([2, 2]);
+        setLinkCrownAngles(false); preparedAngleLink.current = false; pendingAngleLink.current = null;
         setCrownPitch(message.crownRows ? crownRowPitch(message.crownRows[0]) : 27); setCrownCheck(null); setCrownCheckError("");
         setCycle(null); setHingeMode(null); setHingePreview(0); setSetupTarget("upper");
         setCycleSettings(createDefaultBiteCycleSettings(message.info[0], message.suggestedSpacing));
@@ -294,6 +300,10 @@ export function WearApp() {
         setSpacing(message.grid.spacing);
         if (message.mode) setMode(message.mode);
         if (message.preparation) {
+          if (pendingAngleLink.current !== null) {
+            preparedAngleLink.current = pendingAngleLink.current;
+            setLinkCrownAngles(pendingAngleLink.current); pendingAngleLink.current = null;
+          }
           setAutoOpen(message.preparation.autoOpen); setUpperPose(message.preparation.upperPose);
           setLowerPose(message.preparation.lowerPose ?? identityUpperSetupPose());
           setCrownRotations(message.preparation.crownRotations ?? identityCrownRotations());
@@ -414,6 +424,7 @@ export function WearApp() {
     pause(); setBusy(true); setError(""); setStatus("Sampling solid tooth geometry…"); setProgress(0);
     setSnapshot(null); setSurfaces(null); setHistory([]); setTimings(null);
     setCycle(null); setHingePreview(0); stopSetupTools();
+    pendingAngleLink.current = reset ? preparedAngleLink.current : linkCrownAngles;
     post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, contactSpread: isCycles ? 0 : contactSpread, chipThickness: isCycles || forFixedJaw ? 0 : chipThickness, upperPose, lowerPose, crownRotations, crownPitch, mode });
   };
   const invalidateSetup = (message: string) => {
@@ -424,19 +435,47 @@ export function WearApp() {
     setSnapshot(null); setSurfaces(null); setHistory([]); setGrid(null); setWarnings([]); setTimings(null); setCycle(null); setHingePreview(0);
     setStatus(message);
   };
+  const matchingCrownRotations = (rotations: [Rotation, Rotation], driver: Row, wholeRows: [Rotation, Rotation] = [upperPose.rotation, lowerPose.rotation]) => {
+    if (!crownReferences) throw new Error("Load both single-crown arrays before linking their angles.");
+    return matchCrownRowAngles(crownReferences, rotations, wholeRows, driver);
+  };
   const changeRowPose = (row: Row, next: UpperSetupPose) => {
     if (poseLocked) return;
     if (!isValidUpperSetupPose(next)) { setError("Setup pose must contain finite translation and rotation values."); return; }
+    const previous = row === "upper" ? upperPose : lowerPose;
+    if (linkCrownAngles && next.rotation.some((v, i) => v !== previous.rotation[i])) {
+      try {
+        const wholeRows: [Rotation, Rotation] = row === "upper" ? [next.rotation, lowerPose.rotation] : [upperPose.rotation, next.rotation];
+        setCrownRotations(matchingCrownRotations(crownRotations, row, wholeRows));
+      } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return; }
+    }
     (row === "upper" ? setUpperPose : setLowerPose)(next);
     invalidateSetup("Whole-row setup preview. Prepare the wear grid to apply this pose.");
   };
   const changeUpperPose = (next: UpperSetupPose) => changeRowPose("upper", next);
   const changeLowerPose = (next: UpperSetupPose) => changeRowPose("lower", next);
-  const changeCrownRotation = (row: Row, rotation: Rotation) => {
+  const changeCrownRotation = (row: Row, rotation: Rotation): string | null => {
+    if (poseLocked || !crownRows) return "Reset to unworn crown arrays before editing their angles.";
+    if (!isValidUpperSetupPose({ translation: [0, 0, 0], rotation })) return "Use finite crown rotation values.";
+    try {
+      const next: [Rotation, Rotation] = row === "upper" ? [[...rotation], crownRotations[1]] : [crownRotations[0], [...rotation]];
+      setCrownRotations(linkCrownAngles ? matchingCrownRotations(next, row) : next);
+      invalidateSetup(linkCrownAngles ? "Upper and lower crown angles matched. Prepare the wear grid to apply these rotations."
+        : `All six ${row} crowns rotate about their own centers. Prepare the wear grid to apply this tilt.`);
+      return null;
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(message); return message;
+    }
+  };
+  const changeCrownAngleLink = (enabled: boolean) => {
     if (poseLocked || !crownRows) return;
-    if (!isValidUpperSetupPose({ translation: [0, 0, 0], rotation })) return;
-    setCrownRotations(current => row === "upper" ? [[...rotation], current[1]] : [current[0], [...rotation]]);
-    invalidateSetup(`All six ${row} crowns rotate about their own centers. Prepare the wear grid to apply this tilt.`);
+    if (!enabled) { setLinkCrownAngles(false); return; }
+    try {
+      const matched = matchingCrownRotations(crownRotations, selectedRow);
+      setCrownRotations(matched); setLinkCrownAngles(true);
+      invalidateSetup(`Copied ${selectedRow} crown angles to both rows. Further angle edits update both rows.`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
   const changeCrownAngles = (row: Row, edit: CrownAngleEdit): string | null => {
     if (poseLocked) return "Reset to unworn geometry before editing the setup.";
@@ -444,8 +483,9 @@ export function WearApp() {
     if (!reference) return "A long axis could not be measured for this crown.";
     try {
       const rotation = crownRotationForEdit(reference, crownRotations[index], row === "upper" ? upperPose.rotation : lowerPose.rotation, row, edit);
+      const error = changeCrownRotation(row, rotation);
+      if (error) return error;
       stopSetupTools(); setSetupTarget(`${row}-crown`); setCrownEditing(true); setCrownGizmoMode(edit.angle);
-      changeCrownRotation(row, rotation);
       return null;
     } catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
   };
@@ -458,7 +498,7 @@ export function WearApp() {
     if (poseLocked) return;
     setBusy(true); setError("");
     try {
-      const report = JSON.parse(await file.text()) as { setup?: { upper?: { translation?: unknown; rotationDegrees?: unknown }; lower?: { translation?: unknown; rotationDegrees?: unknown }; crowns?: { rotationsDegrees?: unknown; pitch?: unknown } } } | null;
+      const report = JSON.parse(await file.text()) as { setup?: { upper?: { translation?: unknown; rotationDegrees?: unknown }; lower?: { translation?: unknown; rotationDegrees?: unknown }; crowns?: { rotationsDegrees?: unknown; pitch?: unknown; linkAngles?: unknown } } } | null;
       const pose = { translation: report?.setup?.upper?.translation, rotation: report?.setup?.upper?.rotationDegrees };
       if (!isValidUpperSetupPose(pose)) throw new Error("This JSON does not contain a valid exported upper-row setup pose.");
       const lower = report?.setup?.lower ? { translation: report.setup.lower.translation, rotation: report.setup.lower.rotationDegrees } : identityUpperSetupPose();
@@ -468,9 +508,12 @@ export function WearApp() {
       if (!Array.isArray(rotations) || rotations.length !== 2 || !rotations.every(rotation => isValidUpperSetupPose({ translation: [0, 0, 0], rotation }))) throw new Error("This JSON does not contain valid crown rotations.");
       const restoredPitch = report?.setup?.crowns?.pitch ?? (sourceCrownRows ? crownRowPitch(sourceCrownRows[0]) : 27);
       if (typeof restoredPitch !== "number" || !Number.isFinite(restoredPitch) || restoredPitch <= 0 || restoredPitch > 1e6) throw new Error("This JSON does not contain valid tooth spacing.");
+      const restoredLink = report?.setup?.crowns?.linkAngles ?? false;
+      if (typeof restoredLink !== "boolean") throw new Error("The saved crown-angle link must be true or false.");
+      const restoredRotations = restoredLink ? matchingCrownRotations(rotations as [Rotation, Rotation], "upper", [pose.rotation, lower.rotation]) : rotations as [Rotation, Rotation];
       setUpperPose({ translation: [...pose.translation], rotation: [...pose.rotation] });
       setLowerPose({ translation: [...lower.translation], rotation: [...lower.rotation] });
-      setCrownRotations(rotations as [Rotation, Rotation]);
+      setCrownRotations(restoredRotations); setLinkCrownAngles(restoredLink);
       setCrownPitch(restoredPitch);
       invalidateSetup("Restored row poses and crown tilts. Prepare the grid to apply them; worn material and run settings were not restored.");
     } catch (cause) {
@@ -571,7 +614,7 @@ export function WearApp() {
       setup: { upper: { translation: upperPose.translation, rotationDegrees: upperPose.rotation, pivot: upperPivot,
         rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
         lower: { translation: lowerPose.translation, rotationDegrees: lowerPose.rotation, pivot: lowerPivot, rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
-        crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
+        crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, linkAngles: linkCrownAngles, centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
           rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
           orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. axialYaw = swing-twist angle about the source crown long axis, independent of whole-row pose and the occlusal plane. edgeYaw = separate top-view cutting-edge heading from a middle-section width chord, distinct from axial yaw and multi-section matrix scoring. Inclinations and edge heading include whole-row rotation; all are independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
       settings: isCycles ? { autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
@@ -678,7 +721,15 @@ export function WearApp() {
               <legend>{selectedRow === "upper" ? "Upper" : "Lower"} {eachCrownTarget && crownRows ? "crown tilt · linked across all six" : "whole-row setup pose"}</legend>
               <p className="wear-note">Choose <strong>Move</strong> or <strong>Rotate</strong> above the model, then drag its colored arrows or rings. Drag away from the handles to orbit the view.</p>
               {!eachCrownTarget && <dl className="wear-pose-readout"><div><dt>Position · {unit}</dt><dd>{selectedPose.translation.map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>}
-              {crownRows && <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} axialYaw={toothAxisReference ? measureCrownAxialYaw(toothAxisReference, crownRotations[selectedRowIndex]) : null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />}
+              {crownRows && <>
+                <label className="wear-check"><input type="checkbox" aria-label="Link upper and lower crown angles" checked={linkCrownAngles} disabled={poseLocked || !crownReferences?.every(Boolean)} onChange={event => changeCrownAngleLink(event.target.checked)} /> Same upper/lower pitch, roll & yaw</label>
+                <p className="wear-note">{linkCrownAngles ? "Linked: sliders and rings on either row update both. Lean directions match; each row keeps its tip-up/tip-down orientation. Whole-row rotations also keep the crown angles matched."
+                  : `Enable to copy the selected ${selectedRow} row’s displayed angles and lean directions to the other row, then keep them linked.`}</p>
+                {linkCrownAngles && <table className="wear-linked-angles" aria-label="Linked upper and lower angles"><thead><tr><th>Row</th><th>Pitch</th><th>Roll</th><th>Yaw</th></tr></thead><tbody>
+                  {crownInclinations?.map((angles, i) => <tr key={i}><th>{i === 0 ? "Upper" : "Lower"}</th>{(["pitch", "roll", "axialYaw"] as const).map(key => <td key={key}>{angles?.[key] == null ? "—" : `${format(angles[key]!, 1)}°`}</td>)}</tr>)}
+                </tbody></table>}
+                <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} axialYaw={toothAxisReference ? measureCrownAxialYaw(toothAxisReference, crownRotations[selectedRowIndex]) : null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />
+              </>}
               <details className="wear-angle-details" open={crownRows ? undefined : true}><summary>Source rotations · X / Y / Z</summary>
                 <dl className="wear-pose-readout"><div><dt>{eachCrownTarget ? "Each crown" : "Whole row"} · °</dt><dd>{(eachCrownTarget ? crownRotations[selectedRowIndex] : selectedPose.rotation).map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>
                 <p className="wear-note">Euler rotations from the original mesh orientation, applied X then Y then Z. These are rotation commands, not angles to the occlusal plane.</p>

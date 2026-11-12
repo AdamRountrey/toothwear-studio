@@ -40,6 +40,7 @@
 .wear-crown-hint+.wear-cycle-preview{top:176px}
 .wear-empty>.wear-text-button{color:#a9c2cd;margin-top:13px}
 @media(max-width:540px){.wear-transform-toolbar{left:15px;max-width:calc(100% - 30px)}.wear-transform-toolbar button{padding:7px 6px;font-size:10px}.wear-transform-toolbar select{max-width:130px;font-size:9px}.wear-crown-hint{left:15px;top:148px;font-size:9px}.wear-crown-hint+.wear-cycle-preview{top:207px}}
+.wear-linked-angles{width:100%;border-collapse:collapse;margin:0 0 14px;font-size:10px;font-variant-numeric:tabular-nums;color:#4d7079}.wear-linked-angles th,.wear-linked-angles td{padding:6px 4px;text-align:right;border-bottom:1px solid #dce6e8}.wear-linked-angles th:first-child{text-align:left}.wear-linked-angles thead th{font-weight:500;color:#81939d}.wear-linked-angles tbody th{font-weight:600}.wear-linked-angles td{color:#24766b}
 
 /* Persistent publication notice, including when the mobile page scrolls. */
 .wear-experimental-notice{position:sticky;top:0;z-index:5;flex-shrink:0;display:flex;flex-wrap:wrap;gap:3px 7px;padding:8px 27px;background:#fff2d8;color:#6c4610;border-bottom:1px solid #e4c58a;font-size:12px;line-height:1.5}
