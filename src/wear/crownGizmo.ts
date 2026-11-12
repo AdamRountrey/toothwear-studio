@@ -9,11 +9,11 @@ const rotation = (angles: Vec3) => new Quaternion().setFromEuler(new Euler(...an
 
 /** World-space ring normal, using exactly the slider's reference frame. */
 export function crownGizmoAxis(reference: CrownReference, crown: Vec3, wholeRow: Vec3, row: Row, mode: Exclude<CrownGizmoMode, "free">): Vector3 | null {
-  if (measureCrownAxialYaw(reference, crown) === null) return null;
+  if (measureCrownAxialYaw(reference, crown, wholeRow, row) === null) return null;
   const rowQ = rotation(wholeRow);
   if (mode === "yaw") {
     return new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize()
-      .applyQuaternion(rotation(crown)).applyQuaternion(rowQ);
+      .applyQuaternion(rotation(crown)).applyQuaternion(rowQ).multiplyScalar(row === "upper" ? -1 : 1);
   }
   const inclination = measureCrownInclination(reference, crown, wholeRow, row);
   if (!inclination || inclination[mode] === null) return null;
@@ -27,7 +27,7 @@ export function crownGizmoAxis(reference: CrownReference, crown: Vec3, wholeRow:
 export function crownRotationForGizmoDrag(reference: CrownReference, start: Vec3, wholeRow: Vec3, row: Row, mode: Exclude<CrownGizmoMode, "free">, deltaRadians: number): Vec3 {
   if (!Number.isFinite(deltaRadians)) throw new Error("Use a finite rotation angle.");
   if (mode === "yaw") {
-    const yaw = measureCrownAxialYaw(reference, start);
+    const yaw = measureCrownAxialYaw(reference, start, wholeRow, row);
     if (yaw === null) throw new Error("Axial yaw has no unique zero in this pose. Use Free X/Y/Z to tilt the crown first.");
     const value = ((yaw + deltaRadians / radians + 180) % 360 + 360) % 360 - 180;
     return crownRotationForEdit(reference, start, wholeRow, row, { angle: mode, value });

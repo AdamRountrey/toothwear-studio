@@ -498,7 +498,7 @@ export function WearApp() {
     if (poseLocked) return;
     setBusy(true); setError("");
     try {
-      const report = JSON.parse(await file.text()) as { setup?: { upper?: { translation?: unknown; rotationDegrees?: unknown }; lower?: { translation?: unknown; rotationDegrees?: unknown }; crowns?: { rotationsDegrees?: unknown; pitch?: unknown; linkAngles?: unknown } } } | null;
+      const report = JSON.parse(await file.text()) as { setup?: { upper?: { translation?: unknown; rotationDegrees?: unknown }; lower?: { translation?: unknown; rotationDegrees?: unknown }; crowns?: { rotationsDegrees?: unknown; pitch?: unknown; linkAngles?: unknown; yawConvention?: unknown } } } | null;
       const pose = { translation: report?.setup?.upper?.translation, rotation: report?.setup?.upper?.rotationDegrees };
       if (!isValidUpperSetupPose(pose)) throw new Error("This JSON does not contain a valid exported upper-row setup pose.");
       const lower = report?.setup?.lower ? { translation: report.setup.lower.translation, rotation: report.setup.lower.rotationDegrees } : identityUpperSetupPose();
@@ -508,14 +508,17 @@ export function WearApp() {
       if (!Array.isArray(rotations) || rotations.length !== 2 || !rotations.every(rotation => isValidUpperSetupPose({ translation: [0, 0, 0], rotation }))) throw new Error("This JSON does not contain valid crown rotations.");
       const restoredPitch = report?.setup?.crowns?.pitch ?? (sourceCrownRows ? crownRowPitch(sourceCrownRows[0]) : 27);
       if (typeof restoredPitch !== "number" || !Number.isFinite(restoredPitch) || restoredPitch <= 0 || restoredPitch > 1e6) throw new Error("This JSON does not contain valid tooth spacing.");
-      const restoredLink = report?.setup?.crowns?.linkAngles ?? false;
-      if (typeof restoredLink !== "boolean") throw new Error("The saved crown-angle link must be true or false.");
+      const savedLink = report?.setup?.crowns?.linkAngles ?? false;
+      if (typeof savedLink !== "boolean") throw new Error("The saved crown-angle link must be true or false.");
+      // Old reports linked the source-frame twist with opposite upper/lower
+      // signs. Keep their exact poses instead of moving teeth on import.
+      const restoredLink = savedLink && report?.setup?.crowns?.yawConvention === "upright-edge-aligned-v1";
       const restoredRotations = restoredLink ? matchingCrownRotations(rotations as [Rotation, Rotation], "upper", [pose.rotation, lower.rotation]) : rotations as [Rotation, Rotation];
       setUpperPose({ translation: [...pose.translation], rotation: [...pose.rotation] });
       setLowerPose({ translation: [...lower.translation], rotation: [...lower.rotation] });
       setCrownRotations(restoredRotations); setLinkCrownAngles(restoredLink);
       setCrownPitch(restoredPitch);
-      invalidateSetup("Restored row poses and crown tilts. Prepare the grid to apply them; worn material and run settings were not restored.");
+      invalidateSetup(`Restored row poses and crown tilts.${savedLink && !restoredLink ? " Angle linking was turned off to preserve poses from the older yaw convention; enable it to match the new angles." : ""} Prepare the grid to apply them; worn material and run settings were not restored.`);
     } catch (cause) {
       setError(cause instanceof SyntaxError ? "Choose a valid run-settings JSON file." : cause instanceof Error ? cause.message : String(cause));
     } finally { setBusy(false); }
@@ -614,9 +617,9 @@ export function WearApp() {
       setup: { upper: { translation: upperPose.translation, rotationDegrees: upperPose.rotation, pivot: upperPivot,
         rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
         lower: { translation: lowerPose.translation, rotationDegrees: lowerPose.rotation, pivot: lowerPivot, rotationOrder: "world X, then Y, then Z about the source bounding-box center; translation applied afterward" },
-        crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, linkAngles: linkCrownAngles, centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
+        crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, linkAngles: linkCrownAngles, yawConvention: "upright-edge-aligned-v1", centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
           rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
-          orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. axialYaw = swing-twist angle about the source crown long axis, independent of whole-row pose and the occlusal plane. edgeYaw = separate top-view cutting-edge heading from a middle-section width chord, distinct from axial yaw and multi-section matrix scoring. Inclinations and edge heading include whole-row rotation; all are independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
+          orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. axialYaw = source-axis swing-twist angle calibrated to edge alignment with the projected jawline when pitch and roll are both 90 degrees. Positive spin is about -L for uppers and +L for lowers, the same spatial direction when upright. Crown tilts preserve this calibrated twist; whole-row tilts update its reference. edgeYaw = separate current top-view cutting-edge heading from a middle-section width chord, distinct from axial yaw and multi-section matrix scoring. All are independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
       settings: isCycles ? { autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
         : { autoOpen, jawMotion, targetPullDistance: fixedJaw ? pullTarget : null, pullIncrement: fixedJaw ? pullDistance : null, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
       compute: { ...compute, latestFrameTimings: timings }, snapshot, cycle, warnings, history }, null, 2), "toothwear-run.json", "application/json");
@@ -728,7 +731,7 @@ export function WearApp() {
                 {linkCrownAngles && <table className="wear-linked-angles" aria-label="Linked upper and lower angles"><thead><tr><th>Row</th><th>Pitch</th><th>Roll</th><th>Yaw</th></tr></thead><tbody>
                   {crownInclinations?.map((angles, i) => <tr key={i}><th>{i === 0 ? "Upper" : "Lower"}</th>{(["pitch", "roll", "axialYaw"] as const).map(key => <td key={key}>{angles?.[key] == null ? "—" : `${format(angles[key]!, 1)}°`}</td>)}</tr>)}
                 </tbody></table>}
-                <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} axialYaw={toothAxisReference ? measureCrownAxialYaw(toothAxisReference, crownRotations[selectedRowIndex]) : null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />
+                <CrownAngles key={selectedRow} value={crownInclinations?.[selectedRowIndex] ?? null} axialYaw={toothAxisReference ? measureCrownAxialYaw(toothAxisReference, crownRotations[selectedRowIndex], selectedPose.rotation, selectedRow) : null} row={selectedRow === "upper" ? "Upper" : "Lower"} disabled={poseLocked} onChange={target => changeCrownAngles(selectedRow, target)} />
               </>}
               <details className="wear-angle-details" open={crownRows ? undefined : true}><summary>Source rotations · X / Y / Z</summary>
                 <dl className="wear-pose-readout"><div><dt>{eachCrownTarget ? "Each crown" : "Whole row"} · °</dt><dd>{(eachCrownTarget ? crownRotations[selectedRowIndex] : selectedPose.rotation).map((value, axis) => <span key={axis}>{["X", "Y", "Z"][axis]} <b>{format(value, 2)}</b></span>)}</dd></div></dl>

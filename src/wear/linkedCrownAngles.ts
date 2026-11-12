@@ -1,11 +1,11 @@
 import { Euler, Quaternion, Vector3 } from "three";
-import { measureCrownInclination, type CrownReference } from "./crownOrientation";
+import { crownRotationForEdit, measureCrownInclination, type CrownReference } from "./crownOrientation";
 import type { CrownRotations, Vec3 } from "./crownRows";
 
 const radians = Math.PI / 180;
 const rotation = (v: Vec3) => new Quaternion().setFromEuler(new Euler(...v.map(n => n % 360 * radians) as Vec3, "ZYX"));
 
-/** Match displayed inclinations, lean directions and source-local axial yaw.
+/** Match displayed inclinations, lean directions and calibrated axial yaw.
  * Whole-row poses stay fixed; the other row's crowns rotate at their own pivots.
  * Keep its existing vertical hemisphere (normally upper down / lower up).
  * Copy normalized axis components so horizontal/undefined projections need no
@@ -28,10 +28,9 @@ export function matchCrownRowAngles(references: readonly (CrownReference | null)
   desired.normalize().applyQuaternion(rowQ.invert());
   const axis = new Vector3(...targetRef.tip).sub(new Vector3(...targetRef.base)).normalize();
   if (axis.clone().add(desired).length() < 2e-8) throw new Error("Matching these angles would make the other crown's axial yaw undefined. Adjust the tilt or unlink the rows.");
-  const q = new Quaternion().setFromUnitVectors(axis, desired)
-    .multiply(new Quaternion().setFromAxisAngle(axis, source.axialYaw * radians));
+  const q = new Quaternion().setFromUnitVectors(axis, desired);
   const euler = new Euler().setFromQuaternion(q, "ZYX");
   const next: CrownRotations = [[...crowns[0]], [...crowns[1]]];
-  next[targetIndex] = [euler.x / radians, euler.y / radians, euler.z / radians];
+  next[targetIndex] = crownRotationForEdit(targetRef, [euler.x / radians, euler.y / radians, euler.z / radians], wholeRows[targetIndex], targetRow, { angle: "yaw", value: source.axialYaw });
   return next;
 }

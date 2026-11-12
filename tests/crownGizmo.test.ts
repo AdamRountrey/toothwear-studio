@@ -17,7 +17,7 @@ describe("crown gizmo and slider agreement", () => {
     for (const row of ["upper", "lower"] as const) for (const whole of [zero, [12, 31, -16] as Vec3]) {
       const ref = references[row], pose: Vec3 = [20, 3, 25];
       const yaw = crownGizmoAxis(ref, pose, whole, row, "yaw")!;
-      const expected = new Vector3(...ref.tip).sub(new Vector3(...ref.base)).normalize().applyQuaternion(quaternion(pose)).applyQuaternion(quaternion(whole));
+      const expected = new Vector3(...ref.tip).sub(new Vector3(...ref.base)).normalize().applyQuaternion(quaternion(pose)).applyQuaternion(quaternion(whole)).multiplyScalar(row === "upper" ? -1 : 1);
       expect(yaw.distanceTo(expected)).toBeLessThan(1e-12);
       const roll = crownGizmoAxis(ref, pose, whole, row, "roll")!;
       const pitch = crownGizmoAxis(ref, pose, whole, row, "pitch")!;
@@ -39,6 +39,9 @@ describe("crown gizmo and slider agreement", () => {
         if (mode === "yaw") {
           expect(after.axialYaw).toBeCloseTo(before.axialYaw! + degrees, 9);
           expect(after.pitch).toBeCloseTo(before.pitch!, 9); expect(after.roll).toBeCloseTo(before.roll!, 9);
+          const expected = new Quaternion().setFromAxisAngle(crownGizmoAxis(ref, start, whole, row, mode)!, degrees * Math.PI / 180)
+            .multiply(quaternion(whole)).multiply(quaternion(start));
+          expect(expected.angleTo(quaternion(whole).multiply(quaternion(next)))).toBeLessThan(1e-7);
         } else {
           expect(after.axialYaw).toBeCloseTo(before.axialYaw!, 9);
           const sourceAxis = new Vector3(...ref.tip).sub(new Vector3(...ref.base)).normalize();
@@ -75,7 +78,7 @@ describe("crown gizmo and slider agreement", () => {
     const next = crownRotationForGizmoDrag(ref, spun, zero, "upper", "yaw", 3 * Math.PI / 180);
     expect(measureCrownInclination(ref, next, zero, "upper")!.axialYaw).toBeCloseTo(-178, 9);
     expect(crownGizmoAxis(ref, start, [0, 0, 90], "upper", "pitch")).toBeNull();
-    expect(crownGizmoAxis(ref, start, [0, 0, 90], "upper", "yaw")).not.toBeNull();
+    expect(crownGizmoAxis(ref, start, [0, 0, 90], "upper", "yaw")).toBeNull();
     expect(() => crownRotationForGizmoDrag(ref, start, zero, "upper", "roll", NaN)).toThrow("finite");
   });
 

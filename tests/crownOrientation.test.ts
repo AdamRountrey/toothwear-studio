@@ -92,15 +92,42 @@ describe("crown slider rotations", () => {
     }
   });
 
-  it("defines axial yaw entirely in the crown frame, including with a vertical row or vertical cutting edge", () => {
-    const current: Vec3 = [20, 15, -25];
-    const a = crownRotationForEdit(lower, current, zero, "lower", { angle: "yaw", value: 37 });
-    const b = crownRotationForEdit(lower, current, [0, 0, 90], "lower", { angle: "yaw", value: 37 });
-    expect(quaternion(a).angleTo(quaternion(b))).toBeLessThan(1e-7);
-    expect(measureCrownAxialYaw(lower, a)).toBeCloseTo(37, 9);
-    expect(measureCrownAxialYaw(lower, zero)).toBeCloseTo(0, 9);
+  it("calibrates zero to the upright cutting edge, including source lean and whole-row tilt", () => {
+    for (const row of ["upper", "lower"] as const) for (const whole of [zero, [12, 31, -16] as Vec3]) {
+      const reference: CrownReference = { base: [1, 2, 3], tip: [2, row === "upper" ? -8 : 12, 1], edge: [3, 0, 1] };
+      let current: Vec3 = [20, 15, -25];
+      for (const angle of ["pitch", "roll"] as const) current = crownRotationForEdit(reference, current, whole, row, { angle, value: 90, leanSign: 1 });
+      current = crownRotationForEdit(reference, current, whole, row, { angle: "yaw", value: 0 });
+      const upright = measureCrownInclination(reference, current, whole, row)!;
+      expect(upright.pitch).toBeCloseTo(90, 9); expect(upright.roll).toBeCloseTo(90, 9);
+      expect(upright.axialYaw).toBeCloseTo(0, 9); expect(upright.edgeYaw).toBeCloseTo(0, 9);
+      const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
+      // Positive yaw is the same actual spatial turn for upper and lower, not
+      // merely the same number on their sliders. Test signed edge direction.
+      for (const yaw of [-35, 13, 35]) {
+        const spun = crownRotationForEdit(reference, current, whole, row, { angle: "yaw", value: yaw });
+        const beforeQ = quaternion(whole).multiply(quaternion(current));
+        const afterQ = quaternion(whole).multiply(quaternion(spun));
+        const expectedQ = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), yaw * Math.PI / 180).multiply(beforeQ);
+        expect(afterQ.angleTo(expectedQ)).toBeLessThan(1e-7);
+        expect(axis.clone().applyQuaternion(afterQ).distanceTo(axis.clone().applyQuaternion(beforeQ))).toBeLessThan(1e-10);
+        expect(measureCrownInclination(reference, spun, whole, row)!.edgeYaw).toBeCloseTo(-yaw, 9);
+      }
+      const original = [...current];
+      for (const angle of ["pitch", "roll"] as const) current = crownRotationForEdit(reference, current, whole, row, { angle, value: 50, leanSign: 1 });
+      expect(measureCrownInclination(reference, current, whole, row)!.axialYaw).toBeCloseTo(0, 9);
+      for (const angle of ["pitch", "roll"] as const) current = crownRotationForEdit(reference, current, whole, row, { angle, value: 90, leanSign: 1 });
+      expect(quaternion(current).angleTo(quaternion(original as Vec3))).toBeLessThan(1e-7);
+    }
+  });
+
+  it("allows a vertical current edge but requires a jawline and an edge to calibrate yaw", () => {
+    expect(measureCrownAxialYaw(lower, zero, zero, "lower")).toBeCloseTo(0, 9);
     const edgeVertical = crownRotationForEdit(lower, [0, 0, 90], zero, "lower", { angle: "yaw", value: 45 });
-    expect(measureCrownAxialYaw(lower, edgeVertical)).toBeCloseTo(45, 9);
+    expect(measureCrownAxialYaw(lower, edgeVertical, zero, "lower")).toBeCloseTo(45, 9);
+    expect(measureCrownAxialYaw(lower, zero, [0, 0, 90], "lower")).toBeNull();
+    expect(measureCrownAxialYaw({ ...lower, edge: [0, 1, 0] }, zero, zero, "lower")).toBeNull();
+    expect(() => crownRotationForEdit(lower, zero, [0, 0, 90], "lower", { angle: "yaw", value: 0 })).toThrow("no unique zero");
   });
 
   it("keeps the S083 long axis fixed while its cutting-edge heading changes under axial yaw", () => {

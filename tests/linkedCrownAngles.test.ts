@@ -86,6 +86,23 @@ describe("linked upper and lower crown angles", () => {
     expect(measure(result, flatRows)[1].towardOcclusion).toBe(false);
   });
 
+  it("aligns both upright cutting edges at zero and turns them together with linked yaw", () => {
+    for (const driver of ["upper", "lower"] as const) {
+      const i = driver === "upper" ? 0 : 1;
+      let current: CrownRotations = [[...initial[0]], [...initial[1]]];
+      for (const angle of ["pitch", "roll"] as const) current[i] = crownRotationForEdit(refs[i], current[i], tiltedRows[i], driver, { angle, value: 90, leanSign: 1 });
+      for (const yaw of [0, 13, 35, -35, 0]) {
+        current[i] = crownRotationForEdit(refs[i], current[i], tiltedRows[i], driver, { angle: "yaw", value: yaw });
+        current = matchCrownRowAngles(refs, current, tiltedRows, driver);
+        expectMatch(current, tiltedRows);
+        for (const result of measure(current, tiltedRows)) {
+          expect(result.pitch).toBeCloseTo(90, 8); expect(result.roll).toBeCloseTo(90, 8);
+          expect(result.edgeYaw).toBeCloseTo(-yaw, 8);
+        }
+      }
+    }
+  });
+
   it("fails atomically for missing references or undefined frames", () => {
     const before = JSON.stringify(initial);
     expect(() => matchCrownRowAngles([null, refs[1]], initial, flatRows, "upper")).toThrow("Both crown long axes");

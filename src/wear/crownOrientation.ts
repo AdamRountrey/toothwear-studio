@@ -93,18 +93,42 @@ function axialTwist(axis: Vector3, q: Quaternion): Quaternion | null {
   return new Quaternion(axis.x * along, axis.y * along, axis.z * along, q.w).normalize();
 }
 
-/** Axial twist in the crown's own source frame, independent of row placement
- * and the occlusal plane. Q = swing * twist, with twist about the fixed source
- * base-to-tip axis. Zero twist uses the shortest swing from the original axis.
- * At exactly reversed axes that shortest swing, and hence zero twist, is undefined. */
-export function measureCrownAxialYaw(reference: CrownReference, crown: Vec3): number | null {
+/** Calibrate the source-local twist at an upright, edge-aligned pose. This is
+ * a fixed offset for a given source and whole-row pose, not a heading measured
+ * again after each crown tilt. Upper -L and lower +L give the same positive
+ * spatial rotation when upright, while both still spin about their own axes. */
+function crownYawCalibration(reference: CrownReference, wholeRow: Vec3, row: "upper" | "lower") {
   const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base));
   if (axis.lengthSq() < 1e-12) return null;
   axis.normalize();
+  const sign = row === "upper" ? -1 : 1;
+  const rowQ = new Quaternion().setFromRotationMatrix(rotation(wholeRow));
+  const along = new Vector3(1, 0, 0).applyQuaternion(rowQ); along.y = 0;
+  if (along.lengthSq() < 1e-12) return null;
+  along.normalize();
+  const across = new Vector3().crossVectors(along, new Vector3(0, 1, 0));
+  const upright = new Vector3(0, sign, 0).applyQuaternion(rowQ.clone().invert());
+  if (axis.clone().add(upright).length() < 2e-8) return null;
+  const swing = new Quaternion().setFromUnitVectors(axis, upright);
+  const edge = new Vector3(...reference.edge).applyQuaternion(swing).applyQuaternion(rowQ);
+  if (Math.hypot(edge.x, edge.z) < 1e-8) return null;
+  const heading = Math.atan2(edge.dot(across), edge.dot(along));
+  return { axis, sign, zeroTwist: sign * heading };
+}
+
+/** Calibrated axial spin: zero aligns the projected cutting edge with the row
+ * when pitch = roll = 90 degrees. Away from upright, retain that twist offset
+ * rather than reinterpreting yaw as the changing top-view edge heading.
+ * Exact reversal of the source axis has no unique shortest swing. */
+export function measureCrownAxialYaw(reference: CrownReference, crown: Vec3, wholeRow: Vec3, row: "upper" | "lower"): number | null {
+  const calibration = crownYawCalibration(reference, wholeRow, row);
+  if (!calibration) return null;
+  const { axis, sign, zeroTwist } = calibration;
   const q = new Quaternion().setFromRotationMatrix(rotation(crown));
   const twist = axialTwist(axis, q);
   if (!twist) return null;
-  const degrees = 2 * Math.atan2(twist.x * axis.x + twist.y * axis.y + twist.z * axis.z, twist.w) * 180 / Math.PI;
+  const angle = 2 * Math.atan2(twist.x * axis.x + twist.y * axis.y + twist.z * axis.z, twist.w);
+  const degrees = sign * (angle - zeroTwist) * 180 / Math.PI;
   return ((degrees + 180) % 360 + 360) % 360 - 180;
 }
 
@@ -128,7 +152,7 @@ export function measureCrownInclination(reference: CrownReference, crown: Vec3, 
     pitch: projected(along), roll: projected(across), inclination: Math.atan2(Math.abs(vertical), Math.hypot(along, across)) * 180 / Math.PI,
     along, across, vertical, towardOcclusion: (row === "upper" ? -vertical : vertical) >= -1e-8,
     edgeYaw: Math.hypot(edge.x, edge.z) < 1e-8 ? null : ((yaw + 270) % 180) - 90,
-    axialYaw: measureCrownAxialYaw(reference, crown),
+    axialYaw: measureCrownAxialYaw(reference, crown, wholeRow, row),
   };
 }
 
@@ -151,13 +175,14 @@ export function crownRotationForEdit(reference: CrownReference, crown: Vec3, who
     throw new Error("Use a finite pitch or roll from 0–90°, or axial yaw from −180–180°.");
   }
   if (edit.angle === "yaw") {
-    const current = measureCrownAxialYaw(reference, crown);
-    if (current === null) throw new Error("Axial yaw has no unique zero in this reversed-axis pose. Tilt the crown slightly with the gizmo first.");
+    const current = measureCrownAxialYaw(reference, crown, wholeRow, row);
+    if (current === null) throw new Error("Axial yaw has no unique zero in this pose. A measurable edge, horizontal jawline projection, and unreversed source axis are needed. Adjust with Free X/Y/Z first.");
     const axis = new Vector3(...reference.tip).sub(new Vector3(...reference.base)).normalize();
     const q = new Quaternion().setFromRotationMatrix(rotation(crown));
     // Right multiplication spins around the source long axis. In world space
-    // this is exactly the currently displayed L arrow, regardless of jaw pose.
-    q.multiply(new Quaternion().setFromAxisAngle(axis, (edit.value - current) * Math.PI / 180));
+    // positive yaw uses -L for uppers and +L for lowers: the same direction
+    // when upright, without substituting a world-axis rotation for axial spin.
+    q.multiply(new Quaternion().setFromAxisAngle(axis, (row === "upper" ? -1 : 1) * (edit.value - current) * Math.PI / 180));
     const euler = new Euler().setFromQuaternion(q, "ZYX");
     return [euler.x, euler.y, euler.z].map(v => v * 180 / Math.PI) as Vec3;
   }

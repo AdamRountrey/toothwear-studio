@@ -73,7 +73,7 @@ export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { valu
       <label><span>Yaw · spin about tooth long axis <strong>{angle(axialYaw)}</strong></span>
         <input aria-label={`${row} crown yaw angle`} type="range" min="-180" max="180" step="0.1" value={axialYaw ?? 0} disabled={disabled || axialYaw === null} onChange={event => change({ angle: "yaw", value: Number(event.target.value) })} />
       </label>
-      <p className="wear-note">The yaw slider and yaw ring spin about the gold L arrow. Pitch, roll and true inclination stay unchanged. Yaw uses the original crown as its zero-twist reference; it is independent of the occlusal plane and whole-row placement.</p>
+      <p className="wear-note">Yaw 0° aligns the cutting-edge heading with the row when pitch and roll are both 90°. Positive yaw turns uppers and lowers in the same direction when upright. The slider and ring spin about the tooth’s long axis (gold L); pitch, roll and true inclination stay unchanged. Tilting preserves yaw; the top-view edge heading can change.</p>
       {value && <p className="wear-note">Separate edge heading along jaw: <strong>{angle(value.edgeYaw)}</strong></p>}
       {controlError && !value && <p className="wear-warning" role="alert">{controlError}</p>}
     </div>
