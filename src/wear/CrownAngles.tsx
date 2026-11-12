@@ -1,7 +1,54 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { CrownAngleEdit, CrownInclination } from "./crownOrientation";
 
 const angle = (n: number | null) => n === null ? "—" : `${n.toFixed(1)}°`;
+const editableAngle = (n: number | null) => n === null ? "" : String(Number(n.toFixed(4)));
+
+function AngleControl({ title, name, value, min, max, disabled, onChange }: { title: string; name: string; value: number | null; min: number; max: number; disabled: boolean; onChange: (value: number) => string | null }) {
+  const id = useId();
+  const [draft, setDraft] = useState(editableAngle(value));
+  const [error, setError] = useState<string | null>(null);
+  const dirty = useRef(false);
+  const unavailable = disabled || value === null;
+  useEffect(() => {
+    setDraft(editableAngle(value));
+    setError(null);
+    dirty.current = false;
+  }, [value, disabled]);
+  const commit = () => {
+    if (unavailable || !dirty.current) return;
+    const next = Number(draft);
+    if (!draft.trim() || !Number.isFinite(next) || next < min || next > max) {
+      setError(`Enter an angle from ${min}° to ${max}°.`);
+      return;
+    }
+    // Use the same edit callback as the slider, including row linking, lean
+    // direction, gizmo selection and setup invalidation. Incomplete typing
+    // never moves the crown; apply only on Enter or leaving the input.
+    if (onChange(next)) return;
+    dirty.current = false;
+    setDraft(editableAngle(next));
+    setError(null);
+  };
+  return <div className="wear-angle-setting">
+    <label htmlFor={id}><span>{title} <strong>{angle(value)}</strong></span></label>
+    <div className="wear-angle-inputs">
+      <input id={id} aria-label={`${name} angle`} type="range" min={min} max={max} step="0.1" value={value ?? min} disabled={unavailable} onChange={event => {
+        if (!onChange(Number(event.target.value))) { dirty.current = false; setDraft(editableAngle(Number(event.target.value))); setError(null); }
+      }} />
+      <div className="wear-angle-number">
+        <input aria-label={`${name} degrees`} aria-invalid={error ? true : undefined} aria-describedby={error ? `${id}-error` : undefined} type="number" min={min} max={max} step="any" value={draft} disabled={unavailable}
+          onChange={event => { setDraft(event.target.value); dirty.current = true; setError(null); }} onBlur={commit}
+          onKeyDown={event => {
+            if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); }
+            if (event.key === "Escape") { event.preventDefault(); dirty.current = false; setDraft(editableAngle(value)); setError(null); }
+          }} />
+        <span aria-hidden="true">°</span>
+      </div>
+    </div>
+    {error && <p id={`${id}-error`} className="wear-warning" role="alert">{error}</p>}
+  </div>;
+}
 
 function Projection({ name, subtitle, value, horizontal, vertical, axis }: { name: string; subtitle: string; value: number | null; horizontal: number; vertical: number; axis: string }) {
   const length = Math.hypot(horizontal, vertical);
@@ -44,20 +91,16 @@ export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { valu
       <p className="wear-note">90° = perpendicular · 0° = parallel. Green line: projected base-to-tip axis. Gray line: occlusal plane. Both rows are drawn tip-up for comparison.</p>
       <div className="wear-angle-controls" role="group" aria-label={`${row} linked crown rotation controls`}>
         <p>Rotate each {row.toLowerCase()} crown</p>
-        <label><span>Pitch · along row <strong>{angle(value.pitch)}</strong></span>
-          <input aria-label={`${row} crown pitch angle`} type="range" min="0" max="90" step="0.1" value={value.pitch ?? 90} disabled={disabled || value.pitch === null} onChange={event => change({ angle: "pitch", value: Number(event.target.value), leanSign: alongSign })} />
-        </label>
+        <AngleControl title="Pitch · along row" name={`${row} crown pitch`} value={value.pitch} min={0} max={90} disabled={disabled} onChange={next => change({ angle: "pitch", value: next, leanSign: alongSign })} />
         <select aria-label={`${row} pitch lean direction`} value={alongSign} disabled={disabled || value.pitch === null} onChange={event => { const sign = Number(event.target.value); if (!change({ angle: "pitch", value: value.pitch!, leanSign: sign })) setAlongSign(sign); }}>
           <option value={1}>Tip toward +row</option><option value={-1}>Tip toward −row</option>
         </select>
-        <label><span>Roll · across row <strong>{angle(value.roll)}</strong></span>
-          <input aria-label={`${row} crown roll angle`} type="range" min="0" max="90" step="0.1" value={value.roll ?? 90} disabled={disabled || value.roll === null} onChange={event => change({ angle: "roll", value: Number(event.target.value), leanSign: acrossSign })} />
-        </label>
+        <AngleControl title="Roll · across row" name={`${row} crown roll`} value={value.roll} min={0} max={90} disabled={disabled} onChange={next => change({ angle: "roll", value: next, leanSign: acrossSign })} />
         <select aria-label={`${row} roll lean direction`} value={acrossSign} disabled={disabled || value.roll === null} onChange={event => { const sign = Number(event.target.value); if (!change({ angle: "roll", value: value.roll!, leanSign: sign })) setAcrossSign(sign); }}>
           <option value={1}>Tip toward +across</option><option value={-1}>Tip toward −across</option>
         </select>
         <p className="wear-note">All six crowns rotate about their own centers. Roll tilts the long axis across the row; pitch tilts it along the row. Both preserve axial yaw. These two projected inclinations can affect each other.</p>
-        <p className="wear-note">Pitch and roll: 0–90°. Editing a slider selects its matching ring above the model. A missing projection disables only that control. Prepare the wear grid after editing.</p>
+        <p className="wear-note">Pitch and roll: 0–90°. Type a value and press Enter or leave the field to apply; Escape cancels typing. Sliders and typed values select the matching ring above the model. A missing projection disables only that control. Prepare the wear grid after editing.</p>
         {controlError && <p className="wear-warning" role="alert">{controlError}</p>}
       </div>
       {!value.towardOcclusion && <p className="wear-warning">This crown points away from the opposing row.</p>}
@@ -70,9 +113,8 @@ export function CrownAngles({ value, axialYaw, row, disabled, onChange }: { valu
       </details>
     </> : <p className="wear-note">Pitch/roll are unavailable because the crown axis or projected jawline could not be measured. Axial yaw remains available when its reference is defined.</p>}
     <div className="wear-angle-controls" role="group" aria-label={`${row} axial yaw control`}>
-      <label><span>Yaw · spin about tooth long axis <strong>{angle(axialYaw)}</strong></span>
-        <input aria-label={`${row} crown yaw angle`} type="range" min="-180" max="180" step="0.1" value={axialYaw ?? 0} disabled={disabled || axialYaw === null} onChange={event => change({ angle: "yaw", value: Number(event.target.value) })} />
-      </label>
+      <AngleControl title="Yaw · spin about tooth long axis" name={`${row} crown yaw`} value={axialYaw} min={-180} max={180} disabled={disabled} onChange={next => change({ angle: "yaw", value: next })} />
+      <p className="wear-note">Yaw: −180–180°. Type a value and press Enter or leave the field to apply; Escape cancels typing.</p>
       <p className="wear-note">Yaw 0° aligns the cutting-edge heading with the row when pitch and roll are both 90°. Positive yaw turns uppers and lowers in the same direction when upright. The slider and ring spin about the tooth’s long axis (gold L); pitch, roll and true inclination stay unchanged. Tilting preserves yaw; the top-view edge heading can change.</p>
       {value && <p className="wear-note">Separate edge heading along jaw: <strong>{angle(value.edgeYaw)}</strong></p>}
       {controlError && !value && <p className="wear-warning" role="alert">{controlError}</p>}
