@@ -16,6 +16,7 @@ import { CrownAngles } from "./CrownAngles";
 import { crownGizmoAxis, type CrownGizmoMode } from "./crownGizmo";
 import { matchCrownRowAngles } from "./linkedCrownAngles";
 import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
+import { restoreRunSettings } from "./restoreRunSettings";
 
 type Row = "upper" | "lower";
 type Rotation = [number, number, number];
@@ -153,7 +154,7 @@ export function WearApp() {
     pathMode: vegetationPathMode, bendReach: vegetationPathMode === "flexible" ? vegetationBendReach : 0, streamThickness: vegetationStreamThickness };
   const validVegetation = Number.isFinite(vegetationCenterY) && Number.isFinite(vegetationThickness) && vegetationThickness > 0
     && Number.isFinite(vegetationStreamThickness) && vegetationStreamThickness >= 0
-    && Number.isFinite(abrasionRate) && abrasionRate > 0 && Number.isFinite(pullPerClosure) && pullPerClosure >= 0
+    && Number.isFinite(abrasionRate) && abrasionRate >= 0 && Number.isFinite(pullPerClosure) && pullPerClosure >= 0
     && (vegetationPathMode === "straight" || Number.isFinite(vegetationBendReach) && vegetationBendReach >= 0);
   const first = snapshot?.firstContactClosure ?? 0;
   const target = depth + (stopMode === "contact" ? first : 0);
@@ -514,11 +515,34 @@ export function WearApp() {
       // signs. Keep their exact poses instead of moving teeth on import.
       const restoredLink = savedLink && report?.setup?.crowns?.yawConvention === "upright-edge-aligned-v1";
       const restoredRotations = restoredLink ? matchingCrownRotations(rotations as [Rotation, Rotation], "upper", [pose.rotation, lower.rotation]) : rotations as [Rotation, Rotation];
+      const restored = restoreRunSettings(report, { mode, spacing, unit, autoOpen, contactSpread, chipThickness,
+        upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, jawMotion,
+        targetPullDistance: pullTarget, pullIncrement: pullDistance, vegetation: vegetationEnabled ? vegetationSettings : null,
+        targetCycles: cycleTarget, cycleSettings });
+      // No state changes until poses AND all saved run settings are valid.
       setUpperPose({ translation: [...pose.translation], rotation: [...pose.rotation] });
       setLowerPose({ translation: [...lower.translation], rotation: [...lower.rotation] });
       setCrownRotations(restoredRotations); setLinkCrownAngles(restoredLink);
       setCrownPitch(restoredPitch);
-      invalidateSetup(`Restored row poses and crown tilts.${savedLink && !restoredLink ? " Angle linking was turned off to preserve poses from the older yaw convention; enable it to match the new angles." : ""} Prepare the grid to apply them; worn material and run settings were not restored.`);
+      if (restored) {
+        setMode(restored.mode); setSpacing(restored.spacing); setUnit(restored.unit); setAutoOpen(restored.autoOpen);
+        setContactSpread(restored.contactSpread); setChipThickness(restored.chipThickness); setShare(restored.upperWearShare * 100);
+        setStep(restored.increment); setStopMode(restored.stopMode); setDepth(restored.stopDistance); setJawMotion(restored.jawMotion);
+        setPullTarget(restored.targetPullDistance); setPullDistance(restored.pullIncrement);
+        setCycleTarget(restored.targetCycles); setCycleSettings(restored.cycleSettings);
+        if (restored.mode === "cycles") setHingePreset("custom");
+        const v = restored.vegetation;
+        setVegetationEnabled(v !== null);
+        if (v) {
+          setVegetationDirection(v.direction); setVegetationCenterY(v.centerY); setVegetationThickness(v.thickness);
+          setAbrasionRate(v.abrasionRate); setPullPerClosure(v.pullPerClosure); setVegetationPathMode(v.pathMode ?? "straight");
+          setVegetationBendReach(v.bendReach ?? 0); setVegetationStreamThickness(v.streamThickness ?? 0);
+          // Preparation must not replace an imported band height with its suggestion.
+          initializeVegetationBand.current = false;
+        }
+      }
+      stopSetupTools(); pendingAngleLink.current = null;
+      invalidateSetup(`Restored row poses, crown tilts and tooth spacing${restored ? ", plus saved simulation mode, grid and wear settings (including the stopping point)" : "; this older JSON contains no run settings"}.${savedLink && !restoredLink ? " Angle linking was turned off to preserve poses from the older yaw convention; enable it to match the new angles." : ""} Prepare the grid to start from unworn geometry; previous closure and wear are not resumed.`);
     } catch (cause) {
       setError(cause instanceof SyntaxError ? "Choose a valid run-settings JSON file." : cause instanceof Error ? cause.message : String(cause));
     } finally { setBusy(false); }
@@ -620,8 +644,8 @@ export function WearApp() {
         crowns: crownRows ? { countPerRow: 6, pitch: crownPitch, spacingCheck: currentCrownCheck, rotationsDegrees: crownRotations, linkAngles: linkCrownAngles, yawConvention: "upright-edge-aligned-v1", centers: crownRows.map(row => row.centers), sourcePivots: crownRows.map(row => row.sourcePivot),
           rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
           orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. axialYaw = source-axis swing-twist angle calibrated to edge alignment with the projected jawline when pitch and roll are both 90 degrees. Positive spin is about -L for uppers and +L for lowers, the same spatial direction when upright. Crown tilts preserve this calibrated twist; whole-row tilts update its reference. edgeYaw = separate current top-view cutting-edge heading from a middle-section width chord, distinct from axial yaw and multi-section matrix scoring. All are independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
-      settings: isCycles ? { autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
-        : { autoOpen, jawMotion, targetPullDistance: fixedJaw ? pullTarget : null, pullIncrement: fixedJaw ? pullDistance : null, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
+      settings: isCycles ? { spacing, autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
+        : { spacing, autoOpen, jawMotion, targetPullDistance: pullTarget, pullIncrement: pullDistance, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
       compute: { ...compute, latestFrameTimings: timings }, snapshot, cycle, warnings, history }, null, 2), "toothwear-run.json", "application/json");
   };
   const progressTarget = isCycles ? cycleTarget : fixedJaw ? pullTarget : target;
@@ -740,7 +764,7 @@ export function WearApp() {
               {eachCrownTarget && crownRows
                 ? <button className="wear-text-button" disabled={!crownRotations[selectedRowIndex].some(v => v !== 0)} onClick={() => changeCrownRotation(selectedRow, [0, 0, 0])}><RotateCcw size={12} /> Restore crown tilt</button>
                 : <button className="wear-text-button" disabled={!selectedPose.translation.some(v => v !== 0) && !selectedPose.rotation.some(v => v !== 0)} onClick={() => changeRowPose(selectedRow, identityUpperSetupPose())}><RotateCcw size={12} /> Restore source pose</button>}
-              <details className="wear-import"><summary>Restore setup pose from run JSON</summary><div><label>Run settings JSON<input aria-label="Restore setup pose from run JSON" type="file" accept=".json,application/json" disabled={poseLocked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreSetup(file); }} /></label><p className="wear-note">Restores both row poses and linked crown tilts. Load the same original files and row type first. Worn material and other run settings are not restored.</p></div></details>
+              <details className="wear-import"><summary>Restore setup and settings from JSON</summary><div><label>Run or sweep setup JSON<input aria-label="Restore setup and settings from JSON" type="file" accept=".json,application/json" disabled={poseLocked} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void restoreSetup(file); }} /></label><p className="wear-note">Load the same original files and row type first. Restores row poses, crown tilts, tooth spacing, and saved grid, wear, vegetation, jaw motion and stopping settings. Then prepare the grid. Starts from unworn geometry; previous closure and wear are not resumed.</p></div></details>
             </fieldset>
             <p className="wear-note">Preview changes live, then prepare the grid. Whole-row controls move the base and all teeth together about the row center. Named crown rings match the pitch, roll, and axial-yaw sliders; Free X/Y/Z uses the original mesh axes.</p>
             {crownRows && <div className="wear-crown-spacing">

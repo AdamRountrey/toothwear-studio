@@ -6,6 +6,8 @@
 
 A browser application for exploring mutual toothrow wear during closure and optional abrasion from vegetation sliding between the teeth. This standalone repository contains the toothwear application only.
 
+To import a sweep candidate or saved run, load its original models and row type, then use **Setup → Restore setup and settings from JSON**. This restores row poses, crown rotations and spacing, simulation mode, grid spacing, contact spread, chipping, upper wear share, closure increment, stopping mode/distance, automatic opening, and saved vegetation or bite-cycle controls. Choose **Prepare wear grid**, then run. Imports start from unworn geometry; prior closure, removed material and run history are not resumed. Old pose-only files leave run controls unchanged. Invalid saved settings are rejected before any setup changes are applied.
+
 ## Use
 
 1. Choose **Build 6 × 6 crown rows** (two single-crown STLs, approximately 61 MB), **Load example toothrows** (two PLY files, approximately 96 MB), or import your own aligned pair of closed PLY/STL surfaces. Imported files are processed in your browser; they are not uploaded. For single-crown imports, choose that option under **Mesh contents**.
