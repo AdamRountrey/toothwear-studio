@@ -45,6 +45,42 @@ function expectNoPenetration(state: WearState) {
 }
 
 describe("column-based mutual tooth wear", () => {
+  it("seats distant rows to the same gap without wearing them or changing the source", () => {
+    const lower=box(0,2,0,1,0,2), near=box(0,2,3,5,0,2), far=box(0,2,23,25,0,2), original=far.positions.slice();
+    const a=prepareWear(near,lower,{spacing:.5,startingGap:.1});
+    const b=prepareWear(far,lower,{spacing:.5,startingGap:.1});
+    expect(a.initialOpening).toBeCloseTo(-1.9,10);
+    expect(b.initialOpening).toBeCloseTo(-21.9,10);
+    expect(a.firstContactClosure).toBeCloseTo(.1,10);
+    expect(b.firstContactClosure).toBeCloseTo(.1,10);
+    expect(far.positions).toEqual(original);
+    expect(b.closure).toBe(0);
+    expect(getWearSnapshot(b)).toMatchObject({startingGap:.1,removedUpperVolume:0,removedLowerVolume:0});
+    expect(getWearSnapshot(a).remainingUpperVolume).toBeCloseTo(getWearSnapshot(b).remainingUpperVolume,10);
+    expect(advanceWear(b,.1).removedUpperVolume).toBeCloseTo(0,10);
+    const wa=advanceWear(a,.6),wb=advanceWear(b,.6);
+    expect(wb.removedUpperVolume).toBeCloseTo(wa.removedUpperVolume,10);
+    expect(wb.removedLowerVolume).toBeCloseTo(wa.removedLowerVolume,10);
+    expectNoPenetration(b);
+  });
+
+  it("uses one rigid seating offset for every tooth and also clears initial overlap", () => {
+    const state=prepareWear(merge(box(0,1,.5,2.5),box(1,2,2.5,4.5)),box(0,2,0,1),{spacing:.5,autoOpen:false,startingGap:.2});
+    expect(state.initialOpening).toBeCloseTo(.7,10);
+    expect(state.firstContactClosure).toBeCloseTo(.2,10);
+    const gaps=state.columns.filter(c=>c.upper.length&&c.lower.length).map(c=>c.upper[0].min-c.lower.at(-1)!.max);
+    expect(Math.min(...gaps)).toBeCloseTo(.2,10);
+    expect(Math.max(...gaps)).toBeCloseTo(2.2,10);
+    expect(state.removedUpperVolume+state.removedLowerVolume).toBe(0);
+  });
+
+  it("preserves legacy source spacing when seating is off and permits a zero gap", () => {
+    const upper=box(0,1,3,5),lower=box(0,1,0,1);
+    expect(prepareWear(upper,lower,{spacing:.5,autoOpen:true,startingGap:null}).firstContactClosure).toBe(2);
+    expect(prepareWear(upper,lower,{spacing:.5,startingGap:0}).firstContactClosure).toBe(0);
+    for(const gap of [-.1,NaN,Infinity])expect(()=>prepareWear(upper,lower,{spacing:.5,startingGap:gap})).toThrow(/Starting gap/);
+  });
+
   it("preserves both rows before first contact and divides actual contact wear equally", () => {
     const state = prepareWear(box(0,2,3,5,0,2), box(0,2,0,1,0,2), { spacing: 1 });
     expect(state.firstContactClosure).toBeCloseTo(2);

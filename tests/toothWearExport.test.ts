@@ -84,4 +84,18 @@ describe("tooth wear binary PLY export", () => {
     expect(header).toContain("element face 0\n");
     expect(buffer.byteLength).toBe(new TextEncoder().encode(header).length);
   });
+
+  it("exports a seated upper row with its negative setup offset applied exactly once", () => {
+    const state=prepareWear(boxAtY(20),boxAtY(0),{spacing:.5,startingGap:.1});
+    expect(state.initialOpening).toBeCloseTo(-17.9,10);
+    const snapshot=advanceWear(state,.9,.5);
+    const upper=new PLYLoader().parse(encodeWearPly(extractWearSurface(state,"upper"),-snapshot.closure));
+    const lower=new PLYLoader().parse(encodeWearPly(extractWearSurface(state,"lower")));
+    try {
+      upper.computeBoundingBox();lower.computeBoundingBox();
+      expect(upper.boundingBox!.min.y).toBeCloseTo(1.6,5);
+      expect(lower.boundingBox!.max.y).toBeCloseTo(1.6,5);
+      expect(upper.boundingBox!.max.y).toBeCloseTo(3.2,5);
+    } finally {upper.dispose();lower.dispose();}
+  });
 });

@@ -11,6 +11,7 @@ export interface RestoredRunSettings {
   spacing: number;
   unit: string;
   autoOpen: boolean;
+  startingGap?: number | null;
   contactSpread: number;
   chipThickness: number;
   upperWearShare: number;
@@ -81,6 +82,8 @@ export function restoreRunSettings(report: unknown, current: RestoredRunSettings
     mode, spacing,
     unit: units === undefined ? current.unit : choice(units, ["u", "mm", "cm"], "unit label"),
     autoOpen: s.autoOpen === undefined ? current.autoOpen : boolean(s.autoOpen, "automatic opening"),
+    // Missing in older reports: preserve their original preparation behavior.
+    startingGap: s.startingGap == null ? null : number(s.startingGap, "startingGap", 0),
     // Older geometric reports predate these optional wear mechanisms.
     contactSpread: optionalNumber(s, "contactSpread", 0, 0),
     chipThickness: optionalNumber(s, "chipThickness", 0, 0),

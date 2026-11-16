@@ -122,6 +122,8 @@ export function WearApp() {
   const [stopMode, setStopMode] = useState<"contact" | "total">("contact");
   const [share, setShare] = useState(50);
   const [autoOpen, setAutoOpen] = useState(true);
+  const [autoSeat, setAutoSeat] = useState(true);
+  const [startingGap, setStartingGap] = useState(0.1);
   const [dirty, setDirty] = useState(false);
   const [unit, setUnit] = useState("u");
   const [view, setView] = useState<WearView>("front");
@@ -165,6 +167,7 @@ export function WearApp() {
   const noMaterial = !!snapshot && snapshot.remainingUpperVolume <= 0 && snapshot.remainingLowerVolume <= 0;
   const maxContactSpread = Number.isFinite(spacing) && spacing > 0 ? spacing * 16 / 3 : 0;
   const validContactSpread = isCycles || Number.isFinite(contactSpread) && contactSpread >= 0 && contactSpread <= maxContactSpread;
+  const validStartingGap = isCycles || !autoSeat || Number.isFinite(startingGap) && startingGap >= 0;
   const validChipping = isCycles || Number.isFinite(chipThickness) && chipThickness >= 0 && chipThickness <= spacing * 8 && !(chipThickness > 0 && vegetationEnabled);
   const gaussianPrepared = !isCycles && (snapshot?.contactSpread ?? 0) > 0;
   let cycleSettingsError = "";
@@ -280,7 +283,7 @@ export function WearApp() {
           setUpperPose(upper); setLowerPose(lower); setUpperPoseMode(null); setLowerPoseMode(null);
           setCrownRotations(rotations); setCrownPitch(setup.crowns.pitch);
           setMode("geometric"); setJawMotion("closing"); setSpacing(p.spacing); setContactSpread(p.contactSpread); setChipThickness(p.chipThickness);
-          setAutoOpen(p.autoOpen); setShare(p.upperWearShare * 100); setStep(p.increment);
+          setAutoOpen(p.autoOpen); setAutoSeat(false); setShare(p.upperWearShare * 100); setStep(p.increment);
           setStopMode(p.stopMode === "total" ? "total" : "contact"); setDepth(p.stopDistance); setVegetationEnabled(false);
           setBusy(true); setStatus(`Preparing ${launchPreset.name}: restoring crown poses, spacing, and wear settings.`);
           // The worker independently checks crown clearance before sampling.
@@ -306,6 +309,8 @@ export function WearApp() {
             setLinkCrownAngles(pendingAngleLink.current); pendingAngleLink.current = null;
           }
           setAutoOpen(message.preparation.autoOpen); setUpperPose(message.preparation.upperPose);
+          setAutoSeat(message.preparation.startingGap != null);
+          if (message.preparation.startingGap != null) setStartingGap(message.preparation.startingGap);
           setLowerPose(message.preparation.lowerPose ?? identityUpperSetupPose());
           setCrownRotations(message.preparation.crownRotations ?? identityCrownRotations());
           if (message.preparation.crownPitch) setCrownPitch(message.preparation.crownPitch);
@@ -418,7 +423,7 @@ export function WearApp() {
   };
   const stopSetupTools = () => { setUpperPoseMode(null); setLowerPoseMode(null); setCrownEditing(false); setHingeMode(null); };
   const prepare = (reset = false, forFixedJaw = false) => {
-    if (!original || locked || !reset && (!validSetup || !validCrownSpacing || !validContactSpread || !forFixedJaw && !validChipping || !Number.isFinite(spacing) || spacing <= 0)) return;
+    if (!original || locked || !reset && (!validSetup || !validCrownSpacing || !validContactSpread || !validStartingGap || !forFixedJaw && !validChipping || !Number.isFinite(spacing) || spacing <= 0)) return;
     if (forFixedJaw) { setChipThickness(0); setJawMotion("fixed"); setVegetationEnabled(true); }
     showPanel("run");
     clearTrace();
@@ -426,7 +431,7 @@ export function WearApp() {
     setSnapshot(null); setSurfaces(null); setHistory([]); setTimings(null);
     setCycle(null); setHingePreview(0); stopSetupTools();
     pendingAngleLink.current = reset ? preparedAngleLink.current : linkCrownAngles;
-    post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, contactSpread: isCycles ? 0 : contactSpread, chipThickness: isCycles || forFixedJaw ? 0 : chipThickness, upperPose, lowerPose, crownRotations, crownPitch, mode });
+    post(reset ? { type: "reset" } : { type: "prepare", spacing, autoOpen, startingGap: !isCycles && autoSeat ? startingGap : null, contactSpread: isCycles ? 0 : contactSpread, chipThickness: isCycles || forFixedJaw ? 0 : chipThickness, upperPose, lowerPose, crownRotations, crownPitch, mode });
   };
   const invalidateSetup = (message: string) => {
     clearTrace();
@@ -515,7 +520,7 @@ export function WearApp() {
       // signs. Keep their exact poses instead of moving teeth on import.
       const restoredLink = savedLink && report?.setup?.crowns?.yawConvention === "upright-edge-aligned-v1";
       const restoredRotations = restoredLink ? matchingCrownRotations(rotations as [Rotation, Rotation], "upper", [pose.rotation, lower.rotation]) : rotations as [Rotation, Rotation];
-      const restored = restoreRunSettings(report, { mode, spacing, unit, autoOpen, contactSpread, chipThickness,
+      const restored = restoreRunSettings(report, { mode, spacing, unit, autoOpen, startingGap: autoSeat ? startingGap : null, contactSpread, chipThickness,
         upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, jawMotion,
         targetPullDistance: pullTarget, pullIncrement: pullDistance, vegetation: vegetationEnabled ? vegetationSettings : null,
         targetCycles: cycleTarget, cycleSettings });
@@ -526,6 +531,7 @@ export function WearApp() {
       setCrownPitch(restoredPitch);
       if (restored) {
         setMode(restored.mode); setSpacing(restored.spacing); setUnit(restored.unit); setAutoOpen(restored.autoOpen);
+        setAutoSeat(restored.startingGap != null); if (restored.startingGap != null) setStartingGap(restored.startingGap);
         setContactSpread(restored.contactSpread); setChipThickness(restored.chipThickness); setShare(restored.upperWearShare * 100);
         setStep(restored.increment); setStopMode(restored.stopMode); setDepth(restored.stopDistance); setJawMotion(restored.jawMotion);
         setPullTarget(restored.targetPullDistance); setPullDistance(restored.pullIncrement);
@@ -645,7 +651,7 @@ export function WearApp() {
           rotationOrder: "row-local X, then Y, then Z about each crown center; the same rotation applies to each of the six crowns before the whole-row pose; bases follow only the whole-row pose",
           orientationReadout: { method: "Unworn source section-area centers at 20% and 80% crown height. Pitch = along-row projection, roll = across-row projection, 90 degrees perpendicular to fixed world XZ occlusal plane. Row directions follow the projected row X axis. axialYaw = source-axis swing-twist angle calibrated to edge alignment with the projected jawline when pitch and roll are both 90 degrees. Positive spin is about -L for uppers and +L for lowers, the same spatial direction when upright. Crown tilts preserve this calibrated twist; whole-row tilts update its reference. edgeYaw = separate current top-view cutting-edge heading from a middle-section width chord, distinct from axial yaw and multi-section matrix scoring. All are independent of closure and wear.", sourceReferences: crownReferences, anglesDegrees: crownInclinations } } : null },
       settings: isCycles ? { spacing, autoOpen, targetCycles: cycleTarget, ...cycleSettings, loadSchedule: "Opening is unloaded; force smoothly rises during closure to the configured peak at the shared closed pose.", pressureUnits: `N/${unit}²`, stiffnessUnits: `N/${unit}³`, coefficientUnits: `${unit}²/N` }
-        : { spacing, autoOpen, jawMotion, targetPullDistance: pullTarget, pullIncrement: pullDistance, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
+        : { spacing, autoOpen, startingGap: autoSeat ? startingGap : null, jawMotion, targetPullDistance: pullTarget, pullIncrement: pullDistance, heldClosure: fixedJaw ? closure : null, contactSpread: snapshot?.contactSpread ?? 0, chipThickness: snapshot?.chipThickness ?? 0, upperWearShare: share / 100, increment: step, stopMode, stopDistance: depth, targetClosure: target, vegetation: snapshot?.vegetation.settings ?? (vegetationEnabled ? vegetationSettings : null) },
       compute: { ...compute, latestFrameTimings: timings }, snapshot, cycle, warnings, history }, null, 2), "toothwear-run.json", "application/json");
   };
   const progressTarget = isCycles ? cycleTarget : fixedJaw ? pullTarget : target;
@@ -792,9 +798,12 @@ export function WearApp() {
               {!validChipping && <p className="wear-warning">Use a thickness from 0 to eight pitches with vegetation off.</p>}
               {(snapshot?.chipThickness ?? 0) > 0 && <p className="wear-note">Chipped volume: upper {format(snapshot?.chippedUpperVolume ?? 0)} · lower {format(snapshot?.chippedLowerVolume ?? 0)} {unit}³. Included in total removal; separate from contact wear.</p>}
             </>}
-            <label className="wear-check"><input type="checkbox" checked={autoOpen} disabled={locked} onChange={e => { setAutoOpen(e.target.checked); setDirty(true); }} /> Automatically clear initial overlap along Y</label>
-            <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !validChipping || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare()}><Layers3 size={15} />{surfaces && !dirty ? "Rebuild wear grid" : "Prepare wear grid"}</button>
-            {snapshot && <div className="wear-prepared"><Check size={13} /><span>{isCycles ? "Closed reference offset" : gaussianPrepared ? "Initial direct contact at" : "Initial first contact at"} <strong>{format(isCycles ? closure : first, 3)} {unit}</strong>{isCycles ? " along −Y" : " closure"}{snapshot.initialOpening > 0 ? ` · opened ${format(snapshot.initialOpening, 3)} ${unit} to clear overlap` : ""}</span></div>}
+            {!isCycles && <><label className="wear-check"><input type="checkbox" checked={autoSeat} disabled={locked} onChange={e => { setAutoSeat(e.target.checked); setDirty(true); }} /> Start near first contact</label>
+              {autoSeat && <><NumberField label="Starting gap along Y" value={startingGap} min={0} step="any" suffix={unit} disabled={locked} onChange={value => { setStartingGap(value); setDirty(true); }} /><p className="wear-note">On preparation, move the entire upper row along Y until the first sampled contact is this far away. No material is removed. Total closure starts from this seated pose.</p>{!validStartingGap && <p className="wear-warning">Use a finite, nonnegative starting gap.</p>}</>}
+            </>}
+            {(isCycles || !autoSeat) && <label className="wear-check"><input type="checkbox" checked={autoOpen} disabled={locked} onChange={e => { setAutoOpen(e.target.checked); setDirty(true); }} /> Automatically clear initial overlap along Y</label>}
+            <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !validStartingGap || !validChipping || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare()}><Layers3 size={15} />{surfaces && !dirty ? "Rebuild wear grid" : "Prepare wear grid"}</button>
+            {snapshot && <div className="wear-prepared"><Check size={13} /><span>{isCycles ? "Closed reference offset" : gaussianPrepared ? "Initial direct contact at" : "Initial first contact at"} <strong>{format(isCycles ? closure : first, 3)} {unit}</strong>{isCycles ? " along −Y" : " closure"}{snapshot.initialOpening > 0 ? ` · moved upper ${format(snapshot.initialOpening, 3)} ${unit} along +Y` : snapshot.initialOpening < 0 ? ` · seated upper ${format(-snapshot.initialOpening, 3)} ${unit} along −Y` : ""}</span></div>}
 
           </section>
 
@@ -807,7 +816,7 @@ export function WearApp() {
               </div>
               {(chipThickness > 0 || (snapshot?.chipThickness ?? 0) > 0) && <div className="wear-fixed-preparation">
                 <p>This setup uses thin-wall chipping, which cannot run with vegetation. Rebuilding turns chipping off and resets wear to the unworn setup.</p>
-                <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare(false, true)}>Rebuild for fixed-jaw vegetation</button>
+                <button className="wear-secondary full" disabled={!original || locked || !validSetup || !validCrownSpacing || !validContactSpread || !validStartingGap || !Number.isFinite(spacing) || spacing <= 0} onClick={() => prepare(false, true)}>Rebuild for fixed-jaw vegetation</button>
               </div>}
             </>}
             {(!original || !snapshot || dirty) && <button className="wear-secondary full wear-setup-link" onClick={() => showPanel("setup")}><Layers3 size={14} />{!original ? "Load teeth in Setup" : "Prepare geometry in Setup"}<ChevronRight size={13} /></button>}

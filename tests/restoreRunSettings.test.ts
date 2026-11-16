@@ -16,6 +16,14 @@ const sweep = {
 };
 
 describe("restore run settings", () => {
+  it("round-trips a starting gap and turns seating off for older JSON", () => {
+    const current={...defaults(),startingGap:.5};
+    expect(restoreRunSettings({settings:{...sweep.settings,startingGap:.1}},current)!.startingGap).toBe(.1);
+    expect(restoreRunSettings({settings:{startingGap:0}},current)!.startingGap).toBe(0);
+    expect(restoreRunSettings(sweep,current)!.startingGap).toBeNull();
+    expect(restoreRunSettings({settings:{startingGap:null}},current)!.startingGap).toBeNull();
+    for(const startingGap of [-.1,"0.1",Infinity])expect(()=>restoreRunSettings({settings:{startingGap}},current)).toThrow(/startingGap/);
+  });
   it("restores every sweep control, including full-precision stop distance, from a different current mode", () => {
     const current = defaults();
     current.mode = "cycles"; current.jawMotion = "fixed";

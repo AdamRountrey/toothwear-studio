@@ -16,7 +16,7 @@ let crownRows: [CrownRowLayout, CrownRowLayout] | undefined;
 let state: WearState | undefined;
 let traceSettings: VegetationSettings | undefined;
 let traceRequestId = 0;
-let settings = { spacing: 0.5, autoOpen: true, contactSpread: 0, chipThickness: 0, upperPose: identityUpperSetupPose(), lowerPose: identityUpperSetupPose(), crownRotations: identityCrownRotations(), crownPitch: 0, mode: "geometric" as WearMode };
+let settings = { spacing: 0.5, autoOpen: true, startingGap: null as number | null, contactSpread: 0, chipThickness: 0, upperPose: identityUpperSetupPose(), lowerPose: identityUpperSetupPose(), crownRotations: identityCrownRotations(), crownPitch: 0, mode: "geometric" as WearMode };
 const checkCrownSpacing = createCrownSpacingChecker();
 let cycle: BiteCycleMetrics | undefined;
 const send = (message: WearResponse, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
@@ -81,7 +81,7 @@ async function frame(solveMs = 0) {
   }
   const transfer = [upper.positions.buffer, upper.colors.buffer, upper.normals.buffer, lower.positions.buffer, lower.colors.buffer, lower.normals.buffer];
   if (trace) transfer.push(trace.pathPositions.buffer, trace.contactPositions.buffer);
-  send({ type: "frame", upper, lower, snapshot: getWearSnapshot(state!), warnings: [...state!.warnings, ...(cycle?.warnings ?? [])], grid: state!.grid, preparation: { autoOpen: settings.autoOpen, upperPose: settings.upperPose, lowerPose: settings.lowerPose, crownRotations: settings.crownRotations, crownPitch: settings.crownPitch }, trace, traceRequestId: trace ? traceRequestId : undefined, mode: settings.mode, cycle,
+  send({ type: "frame", upper, lower, snapshot: getWearSnapshot(state!), warnings: [...state!.warnings, ...(cycle?.warnings ?? [])], grid: state!.grid, preparation: { autoOpen: settings.autoOpen, startingGap: settings.startingGap, upperPose: settings.upperPose, lowerPose: settings.lowerPose, crownRotations: settings.crownRotations, crownPitch: settings.crownPitch }, trace, traceRequestId: trace ? traceRequestId : undefined, mode: settings.mode, cycle,
     timings: { solveMs, meshMs, previewMs: performance.now() - previewStart } }, transfer);
 }
 
@@ -115,6 +115,7 @@ async function handleMessage(message: WearRequest) {
         cycle = undefined;
         traceSettings = undefined;
         settings.upperPose = identityUpperSetupPose();
+        settings.startingGap = null;
         settings.lowerPose = identityUpperSetupPose();
         settings.crownRotations = identityCrownRotations();
         settings.crownPitch = crownRows ? crownRowPitch(crownRows[0]) : 0;
@@ -123,6 +124,7 @@ async function handleMessage(message: WearRequest) {
       }
       case "swap": {
         if (!sources || !info) throw new Error("Load two toothrows first.");
+        settings.startingGap = null;
         sources = [sources[1], sources[0]];
         info = [info[1], info[0]];
         if (crownRows) crownRows = [crownRows[1], crownRows[0]];
@@ -149,7 +151,7 @@ async function handleMessage(message: WearRequest) {
       case "reset": {
         if (!sources || !info) throw new Error("Load two toothrows first.");
         const nextSettings = message.type === "prepare"
-          ? { spacing: message.spacing, autoOpen: message.autoOpen, contactSpread: message.mode === "cycles" ? 0 : message.contactSpread ?? 0, chipThickness: message.mode === "cycles" ? 0 : message.chipThickness ?? 0, upperPose: message.upperPose ?? identityUpperSetupPose(), lowerPose: message.lowerPose ?? identityUpperSetupPose(), crownRotations: message.crownRotations ?? identityCrownRotations(), crownPitch: message.crownPitch ?? (crownRows ? crownRowPitch(crownRows[0]) : 0), mode: message.mode ?? "geometric" as WearMode }
+          ? { spacing: message.spacing, autoOpen: message.autoOpen, startingGap: message.mode === "cycles" ? null : message.startingGap ?? null, contactSpread: message.mode === "cycles" ? 0 : message.contactSpread ?? 0, chipThickness: message.mode === "cycles" ? 0 : message.chipThickness ?? 0, upperPose: message.upperPose ?? identityUpperSetupPose(), lowerPose: message.lowerPose ?? identityUpperSetupPose(), crownRotations: message.crownRotations ?? identityCrownRotations(), crownPitch: message.crownPitch ?? (crownRows ? crownRowPitch(crownRows[0]) : 0), mode: message.mode ?? "geometric" as WearMode }
           : settings;
         if (!isValidUpperSetupPose(nextSettings.upperPose)) throw new Error("Upper setup translation and rotation must contain finite X, Y and Z values within representable model coordinates.");
         if (!isValidUpperSetupPose(nextSettings.lowerPose)) throw new Error("Lower setup translation and rotation must contain finite X, Y and Z values within representable model coordinates.");
@@ -164,7 +166,7 @@ async function handleMessage(message: WearRequest) {
         const rowGeometry = sources.map((source, row) => nextRows ? bakeCrownRow(source, nextRows[row], nextSettings.crownRotations[row]) : source);
         const upper = transformUpperGeometry(rowGeometry[0], nextSettings.upperPose, pivots[0]);
         const lower = transformUpperGeometry(rowGeometry[1], nextSettings.lowerPose, pivots[1]);
-        state = prepareWear(upper, lower, { spacing: nextSettings.spacing, autoOpen: nextSettings.autoOpen, contactSpread: nextSettings.contactSpread, chipThickness: nextSettings.chipThickness,
+        state = prepareWear(upper, lower, { spacing: nextSettings.spacing, autoOpen: nextSettings.autoOpen, startingGap: nextSettings.startingGap, contactSpread: nextSettings.contactSpread, chipThickness: nextSettings.chipThickness,
           onProgress: (fraction, stage) => send({ type: "progress", fraction, message: stage }) });
         cycle = nextSettings.mode === "cycles" ? emptyBiteCycleMetrics() : undefined;
         if (nextSettings.mode === "cycles") {

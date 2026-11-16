@@ -30,6 +30,8 @@ export interface PrepareWearOptions {
   chipThickness?: number;
   maxColumns?: number;
   autoOpen?: boolean;
+  /** Optional first-contact gap along Y after rigid seating. Null keeps the source separation. */
+  startingGap?: number | null;
   onProgress?: (fraction: number, stage: string) => void;
 }
 
@@ -90,7 +92,9 @@ export interface WearState {
   chippedUpperVolume?: number;
   chippedLowerVolume?: number;
   closure: number;
+  /** Signed preparation translation of the upper row: positive opens, negative seats. */
   initialOpening: number;
+  startingGap?: number | null;
   firstContactClosure: number;
   recommendedVegetationCenterY: number;
   vegetation: VegetationSnapshot;
@@ -154,6 +158,7 @@ export interface WearSnapshot {
   chippedLowerVolume?: number;
   closure: number;
   initialOpening: number;
+  startingGap?: number | null;
   firstContactClosure: number;
   recommendedVegetationCenterY: number;
   vegetation: VegetationSnapshot;
@@ -316,8 +321,9 @@ export function prepareWear(
   lower: WearGeometry,
   options: PrepareWearOptions
 ): WearState {
-  const { spacing, contactSpread = 0, chipThickness = 0, autoOpen = false, maxColumns = 300_000, onProgress } = options;
+  const { spacing, contactSpread = 0, chipThickness = 0, autoOpen = false, startingGap = null, maxColumns = 300_000, onProgress } = options;
   if (!Number.isFinite(spacing) || spacing <= 0) throw new Error("Grid spacing must be a positive finite number.");
+  if (startingGap !== null && (!Number.isFinite(startingGap) || startingGap < 0)) throw new Error("Starting gap must be finite and nonnegative.");
   validateContactSpread(spacing, contactSpread);
   validateChipThickness(spacing, chipThickness);
   if (!Number.isSafeInteger(maxColumns) || maxColumns <= 0) throw new Error("Column limit must be a positive integer.");
@@ -360,10 +366,13 @@ export function prepareWear(
     throw new Error("No closed solid columns could be sampled in one or both rows. Use closed meshes or a finer grid spacing.");
   }
   if (!opposingColumns) throw new Error("The rows have no opposing sampled XZ columns. Check their alignment or use finer grid spacing.");
-  if (minGap < -epsilon && !autoOpen) {
+  if (minGap < -epsilon && !autoOpen && startingGap === null) {
     throw new Error("The upper row starts below or inside the lower row in some columns. Enable automatic opening or move the upper row along +Y before preparing.");
   }
-  const initialOpening = minGap < -epsilon ? -minGap + spacing * 0.1 : 0;
+  // One rigid translation seats the entire upper row. This is setup, not wear:
+  // shift both current and original interval endpoints, then start closure at 0.
+  const initialOpening = startingGap !== null ? startingGap - minGap : minGap < -epsilon ? -minGap + spacing * 0.1 : 0;
+  if (!Number.isFinite(initialOpening)) throw new Error("Starting gap gives an unrepresentable setup translation.");
   if (initialOpening) {
     for (const column of columns) for (const interval of column.upper) {
       interval.min += initialOpening;
@@ -376,7 +385,7 @@ export function prepareWear(
   if (upperRaster.openColumns) warnings.push(`Upper row: ${upperRaster.openColumns} open or ambiguous columns omitted; repair mesh holes for more complete coverage.`);
   if (lowerRaster.openColumns) warnings.push(`Lower row: ${lowerRaster.openColumns} open or ambiguous columns omitted; repair mesh holes for more complete coverage.`);
   const state: WearState = {
-    grid, columns, epsilon, closure: 0, initialOpening,
+    grid, columns, epsilon, closure: 0, initialOpening, startingGap,
     ...(contactSpread > 0 ? { contactSpread } : {}),
     ...(chipThickness > 0 ? { chipThickness } : {}),
     firstContactClosure: Math.max(0, minGap + initialOpening),
@@ -803,7 +812,7 @@ export function getWearSnapshot(state: WearState): WearSnapshot {
     chipThickness: state.chipThickness ?? 0,
     chippedUpperVolume: state.chippedUpperVolume ?? 0,
     chippedLowerVolume: state.chippedLowerVolume ?? 0,
-    closure: state.closure, initialOpening: state.initialOpening, firstContactClosure: state.firstContactClosure,
+    closure: state.closure, initialOpening: state.initialOpening, startingGap: state.startingGap ?? null, firstContactClosure: state.firstContactClosure,
     recommendedVegetationCenterY: state.recommendedVegetationCenterY,
     vegetation: { ...state.vegetation, settings: state.vegetation.settings ? { ...state.vegetation.settings } : null },
     initialUpperVolume: state.initialUpperVolume, initialLowerVolume: state.initialLowerVolume,

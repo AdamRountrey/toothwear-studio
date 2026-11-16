@@ -32,7 +32,7 @@ export type WearRequest =
   | { type: "load"; sources: [MeshSource, MeshSource]; kind?: "crowns" | "rows" }
   | { type: "swap" }
   | { type: "crown-check"; requestId: number; pitch: number; rotations: CrownRotations }
-  | { type: "prepare"; spacing: number; autoOpen: boolean; contactSpread?: number; chipThickness?: number; upperPose?: UpperSetupPose; lowerPose?: UpperSetupPose; crownRotations?: CrownRotations; crownPitch?: number; mode?: WearMode }
+  | { type: "prepare"; spacing: number; autoOpen: boolean; startingGap?: number | null; contactSpread?: number; chipThickness?: number; upperPose?: UpperSetupPose; lowerPose?: UpperSetupPose; crownRotations?: CrownRotations; crownPitch?: number; mode?: WearMode }
   | { type: "cycles"; settings: BiteCycleSettings; count: number }
   | { type: "advance"; target: number; share: number; vegetation?: VegetationSettings }
   | { type: "vegetation"; distance: number; settings: VegetationSettings }
@@ -47,7 +47,7 @@ export type WearResponse =
   | { type: "crown-check-error"; requestId: number; message: string }
   | { type: "progress"; fraction: number; message: string }
   | { type: "loaded"; upper: WearGeometry; lower: WearGeometry; info: [SourceInfo, SourceInfo]; suggestedSpacing: number; crownRows?: [CrownRowLayout, CrownRowLayout] }
-  | { type: "frame"; upper: WearGeometry & { colors: Float32Array }; lower: WearGeometry & { colors: Float32Array }; snapshot: WearSnapshot; warnings: string[]; grid: { nx: number; nz: number; spacing: number }; preparation?: { autoOpen: boolean; upperPose: UpperSetupPose; lowerPose?: UpperSetupPose; crownRotations?: CrownRotations; crownPitch?: number }; trace?: VegetationTrace; traceRequestId?: number; timings?: WearTimings; mode?: WearMode; cycle?: BiteCycleMetrics }
+  | { type: "frame"; upper: WearGeometry & { colors: Float32Array }; lower: WearGeometry & { colors: Float32Array }; snapshot: WearSnapshot; warnings: string[]; grid: { nx: number; nz: number; spacing: number }; preparation?: { autoOpen: boolean; startingGap?: number | null; upperPose: UpperSetupPose; lowerPose?: UpperSetupPose; crownRotations?: CrownRotations; crownPitch?: number }; trace?: VegetationTrace; traceRequestId?: number; timings?: WearTimings; mode?: WearMode; cycle?: BiteCycleMetrics }
   | { type: "trace"; requestId: number; trace: VegetationTrace; closure: number }
   | { type: "trace-error"; requestId: number; message: string }
   | { type: "exported"; row: "upper" | "lower"; buffer: ArrayBuffer }

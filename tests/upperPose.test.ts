@@ -131,6 +131,24 @@ describe("upper toothrow setup pose", () => {
         expect(frame.upper.positions).toEqual(originalPositions);
         expect(frame.snapshot.closure).toBe(0);
       }
+      const seated=await dispatch({...prepare,startingGap:.1});
+      if(seated.type!=="frame")throw new Error("Expected seated frame");
+      expect(seated.snapshot.firstContactClosure).toBeCloseTo(.1,10);
+      expect(seated.snapshot.initialOpening).toBeCloseTo(-2.9,10);
+      expect(seated.preparation?.startingGap).toBe(.1);
+      expect(seated.preparation?.upperPose).toEqual(prepare.upperPose);
+      await dispatch({type:"advance",target:.6,share:.5});
+      for(const message of [{type:"reset"},{...prepare,startingGap:.1}] as WearRequest[]){
+        const frame=await dispatch(message);
+        if(frame.type!=="frame")throw new Error("Expected seated reset");
+        expect(frame.upper.positions).toEqual(seated.upper.positions);
+        expect(frame.snapshot.closure).toBe(0);
+        expect(frame.snapshot.startingGap).toBe(.1);
+      }
+      expect((await dispatch({...prepare,startingGap:-1})).type).toBe("error");
+      const resetSeated=await dispatch({type:"reset"});
+      expect(resetSeated.type==="frame"&&resetSeated.upper.positions).toEqual(seated.upper.positions);
+      await dispatch(prepare);
       const invalid = await dispatch({ ...prepare, upperPose: { translation: [NaN, 0, 0], rotation: [0, 0, 0] } });
       expect(invalid.type).toBe("error");
       const afterInvalid = await dispatch({ type: "reset" });
