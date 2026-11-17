@@ -17,6 +17,7 @@ import { crownGizmoAxis, type CrownGizmoMode } from "./crownGizmo";
 import { matchCrownRowAngles } from "./linkedCrownAngles";
 import { geometricRunComplete, nextGeometricWearRequest, type GeometricRunSettings, type JawMotion } from "./runControl";
 import { restoreRunSettings } from "./restoreRunSettings";
+import { crownBaseHeight, type SetupExportFormat, type SetupExportRequest, type SetupExportResponse } from "./setupExport";
 
 type Row = "upper" | "lower";
 type Rotation = [number, number, number];
@@ -35,6 +36,11 @@ const download = (data: BlobPart, name: string, type: string) => {
 
 export function WearApp() {
   const worker = useRef<Worker>();
+  const setupExportWorker = useRef<Worker>();
+  const [setupExportBusy, setSetupExportBusy] = useState(false);
+  const [setupExportCounts, setSetupExportCounts] = useState<[number, number]>([6, 6]);
+  const [setupExportHeights, setSetupExportHeights] = useState<[number, number]>([10, 10]);
+  const [setupExportFormat, setSetupExportFormat] = useState<SetupExportFormat>("stl");
   const run = useRef(false);
   const timer = useRef<number>();
   const manualPullPending = useRef(false);
@@ -180,7 +186,7 @@ export function WearApp() {
     : fixedJaw ? vegetationEnabled && validVegetation && Number.isFinite(pullTarget) && pullTarget > 0
       && Number.isFinite(pullDistance) && pullDistance > 0 && chipThickness === 0
     : Number.isFinite(target) && depth > 0 && Number.isFinite(step) && step > 0 && (!vegetationEnabled || validVegetation);
-  const locked = busy || running || workerFailed || computeSwitching;
+  const locked = busy || setupExportBusy || running || workerFailed || computeSwitching;
   const toothAxisReference = crownReferences?.[selectedRowIndex];
   const namedCrownRingAvailable = !!toothAxisReference && (crownGizmoMode === "free" || !!crownGizmoAxis(toothAxisReference,
     crownRotations[selectedRowIndex], selectedPose.rotation, selectedRow, crownGizmoMode));
@@ -211,6 +217,7 @@ export function WearApp() {
     setCycle(null); setHingeMode(null); setHingePreview(0); setSetupTarget("upper");
     setHistory([]); setWarnings([]); setGrid(null); setDirty(false);
     setBusy(false); setRunning(false); setError(""); setProgress(0); setWorkerFailed(false);
+    setSetupExportBusy(false);
     setCompute({ preference: "auto", backend: "initializing" }); setComputeSwitching(false); setTimings(null);
     setVegetationTrace(null); setTraceLoading(false); setTraceError(""); traceRequestId.current++;
     setStatus("Load two aligned toothrows to begin.");
@@ -260,6 +267,8 @@ export function WearApp() {
         setUpperPoseMode("translate");
         setLowerPose(identityUpperSetupPose()); setLowerPoseMode(null);
         setCrownRows(message.crownRows ?? null); setCrownRotations(identityCrownRotations()); setCrownEditing(false); setSelectedCrowns([2, 2]);
+        setSetupExportCounts([6, 6]);
+        if (message.crownRows) setSetupExportHeights(message.crownRows.map(layout => Number(crownBaseHeight(layout).toPrecision(7))) as [number, number]);
         setLinkCrownAngles(false); preparedAngleLink.current = false; pendingAngleLink.current = null;
         setCrownPitch(message.crownRows ? crownRowPitch(message.crownRows[0]) : 27); setCrownCheck(null); setCrownCheckError("");
         setCycle(null); setHingeMode(null); setHingePreview(0); setSetupTarget("upper");
@@ -378,7 +387,7 @@ export function WearApp() {
         { name: launchPreset.sources[1], url: new URL(`${import.meta.env.BASE_URL}models/${launchPreset.sources[1]}`, document.baseURI).href },
       ] } satisfies WearRequest);
     }
-    return () => { run.current = false; window.clearTimeout(timer.current); instance.terminate(); worker.current = undefined; };
+    return () => { run.current = false; window.clearTimeout(timer.current); instance.terminate(); worker.current = undefined; setupExportWorker.current?.terminate(); setupExportWorker.current = undefined; };
   }, []);
 
   useEffect(() => {
@@ -637,6 +646,38 @@ export function WearApp() {
     setHingePreview(0); setShowHinge(true); setSetupTarget("hinge"); stopSetupTools(); setHingeMode("rotate");
     setFitKey(key => key + 1);
   };
+  const exportSetup = (row: Row) => {
+    if (!original || locked) return;
+    const index = row === "upper" ? 0 : 1;
+    setHingePreview(0); stopSetupTools(); setError(""); setProgress(0); setSetupExportBusy(true);
+    setStatus(`Building full-resolution ${row} setup…`);
+    try {
+      const instance = new Worker(new URL("./setupExport.worker.ts", import.meta.url), { type: "module" });
+      setupExportWorker.current = instance;
+      const finish = () => { instance.terminate(); if (setupExportWorker.current === instance) setupExportWorker.current = undefined; setSetupExportBusy(false); };
+      instance.onerror = event => { finish(); setError(event.message || "The setup exporter could not run."); setStatus("Setup export failed."); };
+      instance.onmessage = (event: MessageEvent<SetupExportResponse>) => {
+        const message = event.data;
+        if (message.type === "progress") { setStatus(message.message); setProgress(message.fraction); }
+        else if (message.type === "error") { finish(); setError(message.message); setStatus("Setup export failed."); }
+        else {
+          download(message.buffer, message.filename, "application/octet-stream"); finish(); setProgress(1);
+          setStatus(`Exported full-resolution ${row} setup: ${format(message.triangles, 0)} triangles in ${format(message.seconds, 1)} s.`);
+        }
+      };
+      // Clone the source into a short-lived worker; never detach the visible mesh or the wear solver's data.
+      instance.postMessage({ source: original[index], row, layout: crownRows?.[index], rotation: crownRotations[index],
+        pose: index === 0 ? upperPose : lowerPose, pivot: index === 0 ? upperPivot : lowerPivot,
+        count: setupExportCounts[index], baseHeight: setupExportHeights[index], format: setupExportFormat } satisfies SetupExportRequest);
+    } catch (cause) {
+      setupExportWorker.current?.terminate(); setupExportWorker.current = undefined; setSetupExportBusy(false);
+      setError(cause instanceof Error ? cause.message : "Setup export failed.");
+    }
+  };
+  const cancelSetupExport = () => {
+    setupExportWorker.current?.terminate(); setupExportWorker.current = undefined; setSetupExportBusy(false); setProgress(0); setStatus("Setup export cancelled.");
+  };
+
   const exportReport = () => {
     setHingePreview(0);
     download(JSON.stringify({ application: "Toothwear Studio", version: 12, usageNotice, mode, chippingModel: "contact-seeded-axis-width-cap-trimming-v1", vegetationModel: "continuous-finite-bundle-sliding-v3", model: isCycles
@@ -910,6 +951,21 @@ export function WearApp() {
               <p className="wear-note">Rotate the light to reveal ridges and depressions. These controls change the display only.</p>
             </div>}
             <div className="wear-visibility"><label><input type="checkbox" checked={showUpper} onChange={e => setShowUpper(e.target.checked)} /> Upper</label><label><input type="checkbox" checked={showLower} onChange={e => setShowLower(e.target.checked)} /> Lower</label><label><input type="checkbox" checked={showOriginal} onChange={e => setShowOriginal(e.target.checked)} /> Original ghost</label></div>
+            <div className="wear-setup-export">
+              <h3>Full-resolution setup</h3>
+              <p className="wear-note">Export the configured, unworn model directly from the source triangles. No wear grid is needed. Includes crown angles and whole-row poses, before automatic seating or closure.</p>
+              <label className="wear-field"><span>Setup file format</span><select disabled={locked} value={setupExportFormat} onChange={event => setSetupExportFormat(event.target.value as SetupExportFormat)}><option value="stl">Binary STL</option><option value="ply">Binary PLY · smaller indexed file</option></select></label>
+              {crownRows ? <>
+                {(["upper", "lower"] as const).map((row, index) => <div className="wear-setup-export-row" key={row}>
+                  <NumberField label={`${row === "upper" ? "Upper" : "Lower"} teeth on export`} value={setupExportCounts[index]} suffix="teeth" min={1} max={32} step="1" disabled={locked} onChange={value => setSetupExportCounts(current => { const next: [number, number] = [...current]; next[index] = value; return next; })} />
+                  <NumberField label={`${row === "upper" ? "Upper" : "Lower"} base height on export`} value={setupExportHeights[index]} suffix={unit} min={0} max={1e6} step="any" disabled={locked} onChange={value => setSetupExportHeights(current => { const next: [number, number] = [...current]; next[index] = value; return next; })} />
+                </div>)}
+                <p className="wear-note">Export only: the simulation stays at six teeth per row. Tooth spacing and row centres stay fixed. Base height changes the back of the block; the face supporting the crowns stays fixed. The block widens if needed to support tilted roots. Crowns are joined to the block and roots beyond its back are cut and capped. Height 0 exports complete crowns without a base.</p>
+              </> : <p className="wear-note">To adjust tooth count or base height, load the single-crown arrays. Complete imported rows retain their existing teeth and base.</p>}
+              <div className="wear-export-buttons">{(["upper", "lower"] as const).map((row, index) => <button key={row} className="wear-secondary" disabled={!original || locked || !isValidUpperSetupPose(index === 0 ? upperPose : lowerPose) || !!crownRows && (!validCrownPitch || !Number.isInteger(setupExportCounts[index]) || setupExportCounts[index] < 1 || setupExportCounts[index] > 32 || !Number.isFinite(setupExportHeights[index]) || setupExportHeights[index] < 0 || setupExportHeights[index] > 1e6)} onClick={() => exportSetup(row)}><ArrowDownToLine size={14} />{row === "upper" ? "Upper" : "Lower"} setup {setupExportFormat.toUpperCase()}</button>)}</div>
+              {setupExportBusy && <button className="wear-text-button" onClick={cancelSetupExport}>Cancel setup export</button>}
+            </div>
+            <h3 className="wear-export-heading">Sampled wear result</h3>
             <div className="wear-export-buttons">{(["upper", "lower"] as const).map(row => <button key={row} className="wear-secondary" disabled={!snapshot || locked || dirty} onClick={() => { setHingePreview(0); setBusy(true); setError(""); post({ type: "export", row }); }}><ArrowDownToLine size={14} />{row === "upper" ? "Upper" : "Lower"} PLY</button>)}</div>
             <button className="wear-text-button" disabled={!snapshot || locked || dirty} onClick={exportReport}><ArrowDownToLine size={13} /> Download run settings & measurements</button>
             <p className="wear-note">Exports contain the sampled, worn solids in {isCycles ? "the closed reference assembly pose" : "their current assembly pose"}. Source files stay untouched.</p>
